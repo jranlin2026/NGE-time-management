@@ -247,6 +247,26 @@ export function createManagerService(deps) {
     return tasks.findById(taskId);
   }
 
+  async function runMiddayCheck(options = {}) {
+    const schedule = await replanDay({ ...options, reason: "midday_check" });
+    ops.appendEvent({
+      kind: "midday_checked",
+      payload: { date: schedule.date, version: schedule.version },
+      idempotencyKey: `midday:${schedule.date}:${schedule.version}`,
+    });
+    return schedule;
+  }
+
+  async function runDayClose(options = {}) {
+    const schedule = await replanDay({ ...options, reason: "day_close" });
+    ops.appendEvent({
+      kind: "day_closed",
+      payload: { date: schedule.date, version: schedule.version },
+      idempotencyKey: `day-close:${schedule.date}:${schedule.version}`,
+    });
+    return schedule;
+  }
+
   function enqueueFeishuTaskCompletion(task) {
     const taskGuid = ops.getSetting(`feishu_task_guid:${task.id}`);
     if (!taskGuid) return;
@@ -282,8 +302,8 @@ export function createManagerService(deps) {
     handleAction,
     replanDay,
     dispatchDay: (options = {}) => replanDay({ ...options, reason: "daily_plan" }),
-    runMiddayCheck: (options = {}) => replanDay({ ...options, reason: "midday_check" }),
-    runDayClose: (options = {}) => replanDay({ ...options, reason: "day_close" }),
+    runMiddayCheck,
+    runDayClose,
     resumeDeferredTask,
   };
 }
