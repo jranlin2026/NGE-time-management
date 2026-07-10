@@ -4,3 +4,7 @@ coverage/
 *.log
 .superpowers/
 .worktrees/
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
