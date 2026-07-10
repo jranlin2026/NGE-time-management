@@ -1,0 +1,18 @@
+{
+  "name": "time-management-master",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dispatch": "node scripts/dispatch-today.mjs",
+    "ingest": "node scripts/ingest-task.mjs",
+    "feishu:listen": "node scripts/feishu-listen.mjs",
+    "create:tasklist": "node scripts/create-feishu-tasklist.mjs",
+    "tasklist:add-member": "node scripts/add-tasklist-member.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.68.0"
+  }
+}
