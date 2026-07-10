@@ -10,6 +10,24 @@
 4. 每天 08:30 运行调度脚本，选出 1-3 个关键任务。
 5. 调度结果写入每日计划，并通过飞书机器人发回群里。
 
+当前 Mac 版在此基础上增加飞书卡片按钮、SQLite 主数据、两级超时处理、自动重排、晚间复盘和 `launchd` 常驻运行。
+
+## Mac 版必需配置
+
+```text
+FEISHU_APP_ID=
+FEISHU_APP_SECRET=
+FEISHU_RECEIVE_ID=
+FEISHU_RECEIVE_ID_TYPE=open_id
+TIME_MASTER_USER_ID=
+TIME_MASTER_KB_DIR=/Users/nge/MAC BOOK的WPS云盘/林恩光的知识库/01_FounderOS_林总个人OS/08_时间管理大师
+CODEX_BIN=/Applications/ChatGPT.app/Contents/Resources/codex
+```
+
+- `FEISHU_RECEIVE_ID` 是系统主动发消息的个人 `open_id` 或群 `chat_id`；个人模式可留空，首次收到消息后自动保存发送者 `open_id`。
+- `TIME_MASTER_USER_ID` 用于限制只有指定用户能向个人时间管理系统添加任务；建议填写同一个用户标识。
+- 所有真实凭据只放在 `.env`，不要写入文档、日志或 Git。
+
 ## 本地启动
 
 ```powershell
@@ -132,6 +150,40 @@ POST http://你的公网地址/feishu/events
 
 本地开发需要公网隧道，例如内网穿透工具。第一版也可以先不接事件订阅，用 `npm run ingest` 手动入池验证规则。
 
+### 飞书卡片交互
+
+新版作战卡使用飞书卡片 JSON 2.0，并在按钮的 `behaviors` 中配置 `callback`。在飞书开放平台的「事件与回调」里添加：
+
+```text
+card.action.trigger
+```
+
+可使用长连接接收该回调。按钮回传值包含系统动作和本地任务 ID；服务端按回调 `event_id` 去重，并在 3 秒内返回 Toast 响应。
+
+卡片必须由企业自建应用发送，自定义群机器人 Webhook 发送的卡片不能承担本系统的按钮回调。
+
+### 消息与任务权限
+
+至少需要根据使用场景申请：
+
+```text
+im:message
+im:message.p2p_msg:readonly
+task:task:write
+task:tasklist:write
+```
+
+如果在专用群里接收所有消息，再申请群消息权限。每次新增权限或回调后都要重新发布应用版本。
+
+任务 v2 使用：
+
+```text
+POST  /task/v2/tasks
+PATCH /task/v2/tasks/:task_guid
+```
+
+更新请求同时发送任务字段和 `update_fields`，确保只修改声明的字段。
+
 ## 08:30 自动调度
 
 Windows 任务计划程序建议每天 08:30 执行：
@@ -139,6 +191,13 @@ Windows 任务计划程序建议每天 08:30 执行：
 ```powershell
 cd /d D:\CODEX项目\N哥的时间管理大师
 npm run dispatch
+```
+
+Mac 版不使用 Windows 任务计划程序。验证手动运行后安装 LaunchAgent：
+
+```bash
+node scripts/install-launchd.mjs
+launchctl print gui/$UID/com.nge.time-management-master
 ```
 
 ## 知识库文件

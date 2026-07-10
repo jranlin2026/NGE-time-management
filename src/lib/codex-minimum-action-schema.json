@@ -5,6 +5,6 @@
   "required": ["action", "minutes"],
   "properties": {
     "action": { "type": "string", "minLength": 1, "maxLength": 200 },
-    "minutes": { "const": 15 }
+    "minutes": { "type": "integer", "const": 15 }
   }
 }

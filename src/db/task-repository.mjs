@@ -81,6 +81,9 @@ export function createTaskRepository(db, deps = {}) {
         .all()
         .map(mapTask);
     },
+    listAll() {
+      return db.prepare("SELECT * FROM tasks ORDER BY created_at, id").all().map(mapTask);
+    },
     listByStatus(...statuses) {
       if (!statuses.length) return [];
       const placeholders = statuses.map(() => "?").join(",");

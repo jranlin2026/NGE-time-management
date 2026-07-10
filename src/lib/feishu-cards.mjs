@@ -29,7 +29,7 @@ export function renderCurrentTaskCard({ task, startsAt, endsAt }) {
       tag: "action",
       actions: [
         button("▶ 开始", "start", task.id, "primary"),
-        button("✓ 完成", "complete", task.id, "primary_filled"),
+        button("✓ 完成", "complete", task.id, "primary"),
         button("! 卡住", "block", task.id, "danger"),
         button("＋ 推迟 30 分钟", "defer_30", task.id, "default"),
       ],
@@ -94,6 +94,11 @@ function button(content, action, taskId, type) {
     tag: "button",
     text: { tag: "plain_text", content },
     type,
-    value: { action, taskId },
+    behaviors: [
+      {
+        type: "callback",
+        value: { action, taskId },
+      },
+    ],
   };
 }

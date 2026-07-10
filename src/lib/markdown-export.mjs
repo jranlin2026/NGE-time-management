@@ -20,7 +20,7 @@ function renderSchedule(date, schedule) {
   }
   for (const block of schedule.blocks) {
     lines.push(
-      `- 任务 ${block.taskId}`,
+      `- 任务 ${block.title || block.taskId}`,
       `  - 时间：${block.startsAt || "未设置"} 至 ${block.endsAt || "未设置"}`,
       `  - 原因：${block.reason || "当前综合优先级"}`,
     );

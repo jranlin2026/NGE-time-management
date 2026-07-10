@@ -40,8 +40,8 @@ export function extractMessageText(eventBody = {}) {
     messageId: message.message_id || event.message_id || "",
     chatId: message.chat_id || event.chat_id || "",
     senderId:
-      event.sender?.sender_id?.user_id ||
       event.sender?.sender_id?.open_id ||
+      event.sender?.sender_id?.user_id ||
       event.sender?.sender_id?.union_id ||
       "",
   };

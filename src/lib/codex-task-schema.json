@@ -16,14 +16,15 @@
     "confidence"
   ],
   "properties": {
-    "intent": { "const": "create_task" },
+    "intent": { "type": "string", "const": "create_task" },
     "title": { "type": "string", "minLength": 1, "maxLength": 80 },
     "project": { "type": "string", "minLength": 1, "maxLength": 80 },
     "quadrant": {
+      "type": "string",
       "enum": ["重要且紧急", "重要不紧急", "不重要但紧急", "不重要不紧急"]
     },
-    "importance": { "enum": ["S", "A", "B", "C"] },
-    "urgency": { "enum": ["high", "medium", "low"] },
+    "importance": { "type": "string", "enum": ["S", "A", "B", "C"] },
+    "urgency": { "type": "string", "enum": ["high", "medium", "low"] },
     "dueAt": {
       "anyOf": [
         { "type": "string", "format": "date-time" },

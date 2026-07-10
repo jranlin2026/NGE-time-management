@@ -29,6 +29,16 @@ test("extracts text from Feishu message event", () => {
   assert.equal(result.senderId, "192b6gd8");
 });
 
+test("prefers open_id for a reusable personal message destination", () => {
+  const result = extractMessageText({
+    event: {
+      sender: { sender_id: { user_id: "user-1", open_id: "ou_1" } },
+      message: { message_id: "om_1", message_type: "text", content: JSON.stringify({ text: "帮助" }) },
+    },
+  });
+  assert.equal(result.senderId, "ou_1");
+});
+
 test("detects dispatch commands", () => {
   assert.equal(isDispatchCommand("今日任务"), true);
   assert.equal(isDispatchCommand("dispatch"), true);

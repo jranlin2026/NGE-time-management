@@ -1,8 +1,9 @@
 import path from "node:path";
 import fs from "node:fs";
 
-const defaultKbDir =
-  "C:\\Users\\jranl\\WPSDrive\\196914891\\WPS云盘\\林恩光的知识库\\01_FounderOS_林总个人OS\\08_时间管理大师";
+const defaultKbDir = process.platform === "darwin"
+  ? "/Users/nge/MAC BOOK的WPS云盘/林恩光的知识库/01_FounderOS_林总个人OS/08_时间管理大师"
+  : "C:\\Users\\jranl\\WPSDrive\\196914891\\WPS云盘\\林恩光的知识库\\01_FounderOS_林总个人OS\\08_时间管理大师";
 
 export function loadConfig(env = process.env) {
   const dotEnv = env === process.env ? readDotEnv(path.resolve(".env")) : {};
@@ -38,6 +39,9 @@ export function loadConfig(env = process.env) {
     backupDir: path.resolve(merged.TIME_MASTER_BACKUP_DIR || path.join(dataDir, "backups")),
     markdownExportDir: path.resolve(merged.TIME_MASTER_MARKDOWN_DIR || path.join(dataDir, "exports")),
     codexBin: merged.CODEX_BIN || "/Applications/ChatGPT.app/Contents/Resources/codex",
+    codexModel: merged.CODEX_MODEL || "gpt-5.3-codex-spark",
+    codexReasoningEffort: merged.CODEX_REASONING_EFFORT || "low",
+    codexTimeoutMs: Number(merged.CODEX_TIMEOUT_MS || 45_000),
     timezone: merged.TIME_MASTER_TIMEZONE || "Asia/Shanghai",
     managerUserId: merged.TIME_MASTER_USER_ID || "",
     schedule,

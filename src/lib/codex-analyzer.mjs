@@ -83,6 +83,10 @@ export async function runCodex(config, { prompt, schemaPath }) {
   try {
     const args = [
       "exec",
+      "--model",
+      config.codexModel || "gpt-5.3-codex-spark",
+      "-c",
+      `model_reasoning_effort=${JSON.stringify(config.codexReasoningEffort || "low")}`,
       "--ephemeral",
       "--sandbox",
       "read-only",

@@ -119,7 +119,7 @@ function buildWindows(date, definitions, timezone, now) {
     }));
 }
 
-function zonedDateTimeToUtc(date, time, timezone) {
+export function zonedDateTimeToUtc(date, time, timezone) {
   const [year, month, day] = date.split("-").map(Number);
   const [hour, minute] = time.split(":").map(Number);
   const guessedUtc = Date.UTC(year, month - 1, day, hour, minute);
