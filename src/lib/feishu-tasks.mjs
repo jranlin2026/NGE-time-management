@@ -67,6 +67,38 @@ export async function createTask(config, task) {
   });
 }
 
+export async function updateTask(config, taskGuid, patch) {
+  return feishuRequest(config, `/task/v2/tasks/${encodeURIComponent(taskGuid)}`, {
+    method: "PATCH",
+    body: buildTaskUpdateBody(patch),
+  });
+}
+
+export function buildTaskUpdateBody(patch) {
+  const task = {};
+  const updateFields = [];
+  if (patch.summary !== undefined) {
+    task.summary = patch.summary;
+    updateFields.push("summary");
+  }
+  if (patch.description !== undefined) {
+    task.description = patch.description;
+    updateFields.push("description");
+  }
+  if (patch.dueDate !== undefined) {
+    task.due = {
+      timestamp: String(new Date(`${patch.dueDate}T18:00:00+08:00`).getTime()),
+      is_all_day: true,
+    };
+    updateFields.push("due");
+  }
+  if (patch.completedAt !== undefined) {
+    task.completed_at = patch.completedAt ? String(new Date(patch.completedAt).getTime()) : "0";
+    updateFields.push("completed_at");
+  }
+  return { task, update_fields: updateFields };
+}
+
 export async function createSubtask(config, parentGuid, task) {
   const body = buildTaskBody(config, task, { includeTasklist: false });
   return feishuRequest(config, `/task/v2/tasks/${encodeURIComponent(parentGuid)}/subtasks`, {
