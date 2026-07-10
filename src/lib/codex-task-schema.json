@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "intent",
+    "title",
+    "project",
+    "quadrant",
+    "importance",
+    "urgency",
+    "dueAt",
+    "estimateMinutes",
+    "nextAction",
+    "doneDefinition",
+    "confidence"
+  ],
+  "properties": {
+    "intent": { "const": "create_task" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "project": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "quadrant": {
+      "enum": ["重要且紧急", "重要不紧急", "不重要但紧急", "不重要不紧急"]
+    },
+    "importance": { "enum": ["S", "A", "B", "C"] },
+    "urgency": { "enum": ["high", "medium", "low"] },
+    "dueAt": {
+      "anyOf": [
+        { "type": "string", "format": "date-time" },
+        { "type": "null" }
+      ]
+    },
+    "estimateMinutes": { "type": "integer", "minimum": 5, "maximum": 480 },
+    "nextAction": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "doneDefinition": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+  }
+}
