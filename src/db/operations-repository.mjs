@@ -36,6 +36,11 @@ export function createOperationsRepository(db, deps = {}) {
         .all(...values)
         .map(mapEvent);
     },
+    findEventByIdempotencyKey(key) {
+      if (!key) return null;
+      const row = db.prepare("SELECT * FROM task_events WHERE idempotency_key = ?").get(key);
+      return row ? mapEvent(row) : null;
+    },
     replaceSchedule({ date, blocks }) {
       return withTransaction(db, () => {
         const previous = db
