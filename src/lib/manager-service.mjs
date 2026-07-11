@@ -3,6 +3,7 @@ import { transitionTask } from "./task-state-machine.mjs";
 import { renderDailyPlanCard } from "./feishu-cards.mjs";
 import { createDailyTaskGenerator, isoWeekId } from "./daily-task-generator.mjs";
 import { createAcceptanceService } from "./acceptance-service.mjs";
+import { createProjectOperationsRepository } from "../db/project-operations-repository.mjs";
 
 export function createManagerService(deps) {
   const {
@@ -17,7 +18,8 @@ export function createManagerService(deps) {
     ? createDailyTaskGenerator({ tasks, projectOps: deps.projectOps })
     : { materialize: async () => [] });
   const nowDate = () => deps.clock?.now?.() || new Date();
-  const acceptance = deps.acceptance || createAcceptanceService({ tasks, ops, analyzer, acceptances: deps.projectOps, transaction, clock: deps.clock });
+  const acceptanceStore = deps.projectOps || (deps.db ? createProjectOperationsRepository(deps.db) : null);
+  const acceptance = deps.acceptance || createAcceptanceService({ tasks, ops, analyzer, acceptances: acceptanceStore, transaction, clock: deps.clock });
 
   async function ingest({ messageId, text, chatId = "", senderId = "" }) {
     if (settings.managerUserId && senderId && senderId !== settings.managerUserId) {
@@ -359,7 +361,10 @@ export function createManagerService(deps) {
   return {
     ingest,
     handleAction,
-    submitEvidence: (input) => acceptance.submit(input),
+    submitEvidence: (input) => {
+      if (settings.managerUserId && input.senderId && input.senderId !== settings.managerUserId) return { ignored: true, reason: "different_user" };
+      return acceptance.submit(input);
+    },
     decideAcceptance: (input) => acceptance.decideByUser(input),
     listPendingAcceptance: () => tasks.listByStatus("pending_acceptance"),
     replanDay,

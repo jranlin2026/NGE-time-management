@@ -153,3 +153,33 @@ test("app exposes a callable weekly generation path after setup", async () => {
   assert.deepEqual(generated, [{ weekId: "2026-W29" }]);
   await app.stop();
 });
+
+test("routes text-only evidence without ingesting it as a task", async () => {
+  let submitted;
+  const handler = createMessageHandler({
+    config: { managerUserId: "owner", feishuReceiveId: "owner" },
+    ops: { setSetting() {} }, weeklyPlanning: {},
+    manager: {
+      listPendingAcceptance: () => [{ id: "task-1" }],
+      submitEvidence: async (input) => { submitted = input; },
+      ingest: async () => assert.fail("evidence must not enter task ingestion"),
+    },
+  });
+  await handler({ kind: "message", text: "提交结果：发布视频｜已发布 3 条", isEvidenceSubmission: true, evidence: [{ type: "text", value: "已发布 3 条" }], senderId: "owner", messageId: "msg-1" });
+  assert.equal(submitted.taskId, "task-1");
+  assert.equal(submitted.senderId, "owner");
+});
+
+test("ignores unauthorized evidence before acceptance routing", async () => {
+  const handler = createMessageHandler({
+    config: { managerUserId: "owner", feishuReceiveId: "owner" },
+    ops: { setSetting() {} }, weeklyPlanning: {},
+    manager: {
+      listPendingAcceptance: () => assert.fail("unauthorized evidence must not inspect acceptance routing"),
+      submitEvidence: async () => assert.fail("unauthorized evidence must not mutate acceptance"),
+      ingest: async () => assert.fail("unauthorized evidence must not enter task ingestion"),
+    },
+  });
+  const result = await handler({ kind: "message", text: "", evidence: [{ type: "feishu_image", value: "img" }], senderId: "intruder", messageId: "msg-2" });
+  assert.deepEqual(result, { ignored: true, reason: "different_user" });
+});

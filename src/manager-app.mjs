@@ -258,6 +258,9 @@ export async function connectFeishu(config, { manager, tasks, ops, projectRepo, 
 export function createMessageHandler({ config, manager, ops, weeklyPlanning }) {
   return async function handleMessage(message) {
     if (message.kind !== "message") return;
+    if ((message.evidence?.length || message.isEvidenceSubmission) && config.managerUserId && message.senderId && message.senderId !== config.managerUserId) {
+      return { ignored: true, reason: "different_user" };
+    }
     if ((!config.feishuReceiveId || (message.chatId && config.feishuReceiveIdType !== "chat_id")) && (message.chatId || message.senderId)) {
       const destination = selectReplyDestination(message);
       config.feishuReceiveId = destination.receiveId;
@@ -265,9 +268,10 @@ export function createMessageHandler({ config, manager, ops, weeklyPlanning }) {
       ops.setSetting("feishu_receive_id", destination.receiveId);
       ops.setSetting("feishu_receive_destination", destination);
     }
-    if (message.evidence?.length) {
+    if (message.evidence?.length || message.isEvidenceSubmission) {
       const pending = manager.listPendingAcceptance?.() || [];
-      if (pending.length === 1) return manager.submitEvidence({ taskId: pending[0].id, evidence: message.evidence, idempotencyKey: `message:${message.messageId}` });
+      if (pending.length === 1) return manager.submitEvidence({ taskId: pending[0].id, evidence: message.evidence, senderId: message.senderId, chatId: message.chatId, messageId: message.messageId, idempotencyKey: `message:${message.messageId}` });
+      return { ignored: true, reason: pending.length ? "ambiguous_acceptance" : "no_pending_acceptance" };
     }
     if (!message.text) return;
     const action = normalizeManagerAction(message.text);

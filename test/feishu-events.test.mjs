@@ -13,8 +13,15 @@ import {
 
 test("normalizes a submitted result URL as evidence", () => {
   assert.deepEqual(normalizeEvidenceMessage("提交结果：发布视频｜https://example.com/v/1").evidence, [
+    { type: "text", value: "https://example.com/v/1" },
     { type: "url", value: "https://example.com/v/1" },
   ]);
+});
+
+test("normalizes a text-only result as evidence instead of a new task", () => {
+  const result = normalizeEvidenceMessage("提交结果：发布视频｜已发布 3 条，全部审核通过");
+  assert.equal(result.isEvidenceSubmission, true);
+  assert.deepEqual(result.evidence, [{ type: "text", value: "已发布 3 条，全部审核通过" }]);
 });
 
 test("extracts an unreadable Feishu image as a manual-review reference", () => {
@@ -24,6 +31,7 @@ test("extracts an unreadable Feishu image as a manual-review reference", () => {
   assert.equal(result.kind, "message");
   assert.equal(result.evidence[0].type, "feishu_image");
   assert.equal(result.evidence[0].value, "img_v2_1");
+  assert.equal(result.evidence[0].messageId, "om_image");
 });
 
 test("extracts text from Feishu message event", () => {

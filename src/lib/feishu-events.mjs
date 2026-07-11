@@ -26,16 +26,18 @@ export function extractMessageText(eventBody = {}) {
   const messageType = message.message_type || event.message_type || "text";
   if (["image", "file"].includes(messageType)) {
     const content = parseContent(message.content || event.content || "");
+    const messageId = message.message_id || event.message_id || "";
+    const chatId = message.chat_id || event.chat_id || "";
+    const senderId = event.sender?.sender_id?.open_id || event.sender?.sender_id?.user_id || "";
     return {
       kind: "message",
       text: "",
       evidence: [{
         type: messageType === "image" ? "feishu_image" : "file_reference",
         value: messageType === "image" ? (content.image_key || "") : (content.file_key || content.file_name || ""),
+        messageId, chatId, senderId,
       }],
-      messageId: message.message_id || event.message_id || "",
-      chatId: message.chat_id || event.chat_id || "",
-      senderId: event.sender?.sender_id?.open_id || event.sender?.sender_id?.user_id || "",
+      messageId, chatId, senderId,
     };
   }
   if (messageType !== "text") {
@@ -53,6 +55,7 @@ export function extractMessageText(eventBody = {}) {
     kind: "message",
     text: normalizeInboundText(content.text || content),
     evidence: normalized.evidence,
+    isEvidenceSubmission: normalized.isEvidenceSubmission,
     messageId: message.message_id || event.message_id || "",
     chatId: message.chat_id || event.chat_id || "",
     senderId:
@@ -65,9 +68,11 @@ export function extractMessageText(eventBody = {}) {
 
 export function normalizeEvidenceMessage(text = "") {
   const value = normalizeInboundText(text);
+  const submission = value.match(/^提交结果[:：]\s*(.*?)\s*[｜|]\s*(.+)$/s);
   const evidence = [...value.matchAll(/https?:\/\/[^\s｜|]+/gi)]
     .map((match) => ({ type: "url", value: match[0].replace(/[，。！？、；：,.!?;:)]+$/, "") }));
-  return { text: value, evidence };
+  if (submission?.[2]?.trim()) evidence.unshift({ type: "text", value: submission[2].trim() });
+  return { text: value, evidence, isEvidenceSubmission: Boolean(submission) };
 }
 
 export function selectReplyDestination(message = {}) {

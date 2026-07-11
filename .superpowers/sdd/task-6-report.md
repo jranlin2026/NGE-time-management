@@ -38,3 +38,21 @@ Complete.
 ## Concerns
 
 - None blocking. When multiple tasks await acceptance, evidence is not guessed onto a task; the current message handler only auto-routes evidence when exactly one pending acceptance exists.
+
+## Review fixes
+
+- Result messages now preserve arbitrary text/quantity conclusions as text evidence and also extract any URLs; recognized result messages never fall through to task ingestion.
+- Image and file evidence carries sender, chat, and source-message identity. Evidence authorization is checked before acceptance lookup or mutation.
+- Submission now performs read-only pending validation, runs async analysis without mutation, then re-reads and commits the acceptance decision, task transition, manual-review outbox, and idempotency event in one shared SQLite transaction.
+- Duplicate submissions return the persisted acceptance decision. Late/replayed evidence without a pending task and acceptance is rejected before any durable event.
+- URL syntax and count are validation gates only. Valid URLs require analyzer verification; analyzer failure, unreadable URLs, or uncertain relevance require user confirmation.
+
+### Review RED/GREEN evidence
+
+- RED: review identified text-only results falling into task ingestion, media evidence without source metadata, URL-count auto-acceptance, and non-atomic writes before validation.
+- GREEN: added routing and authorization regressions, unreachable/irrelevant URL regressions, late-evidence checks, and injected failures after acceptance, task, outbox, and event writes.
+- Failure-injection tests prove every partial write rolls back and retrying the same idempotency key converges without stranding `pending_acceptance`.
+- Review Task 6 target suite: 43 passed, 0 failed.
+- Expanded target plus manager-app routing suite: 52 passed, 0 failed.
+- Review full suite: 156 passed, 0 failed.
+- `git diff --check`: passed.
