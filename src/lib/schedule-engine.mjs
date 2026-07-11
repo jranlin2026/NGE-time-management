@@ -28,6 +28,7 @@ export function buildDailySchedule({ date, now, tasks, settings }) {
       const slot = nextAvailableSlot({ date, now: nowDate, definitions, timezone: settings.timezone || "Asia/Shanghai", occupied: blocks });
       if (!slot) break;
       const available = Math.floor((slot.end - slot.start) / 60_000);
+      if (available <= 0) break;
       const minutes = Math.min(remaining, available, 120);
       const start = new Date(slot.start);
       const end = new Date(slot.start + minutes * 60_000);

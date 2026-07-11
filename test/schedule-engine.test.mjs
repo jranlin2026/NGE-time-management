@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { buildDailySchedule, replanRemaining } from "../src/lib/schedule-engine.mjs";
 
@@ -10,6 +11,34 @@ const settings = {
     { project: "个人IP", points: 100, startsOn: "2026-07-10", endsOn: "2026-07-15" },
   ],
 };
+
+test("does not hang when a protected window has less than one minute remaining", () => {
+  const moduleUrl = new URL("../src/lib/schedule-engine.mjs", import.meta.url).href;
+  const script = `
+    import { buildDailySchedule } from ${JSON.stringify(moduleUrl)};
+    const result = buildDailySchedule({
+      date: "2026-07-11",
+      now: "2026-07-11T07:00:41.000Z",
+      settings: {
+        timezone: "Asia/Shanghai",
+        maxCriticalTasks: 1,
+        windows: [["14:00", "16:00"]],
+        projectWindows: { "个人IP": [["14:00", "16:00"]] },
+      },
+      tasks: [{
+        id: "ip-long", title: "个人IP", project: "个人IP", status: "ready",
+        estimateMinutes: 120, importance: "A", urgency: "medium",
+        createdAt: "2026-07-10T00:00:00.000Z",
+      }],
+    });
+    if (result.blocks.length !== 1) process.exit(2);
+  `;
+
+  assert.doesNotThrow(() => execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+    timeout: 750,
+    stdio: "pipe",
+  }));
+});
 
 test("schedules at most three tasks inside available windows", () => {
   const tasks = Array.from({ length: 5 }, (_, index) => ({
