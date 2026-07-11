@@ -2,6 +2,7 @@ import { buildDailySchedule, replanRemaining } from "./schedule-engine.mjs";
 import { transitionTask } from "./task-state-machine.mjs";
 import { renderDailyPlanCard } from "./feishu-cards.mjs";
 import { createDailyTaskGenerator, isoWeekId } from "./daily-task-generator.mjs";
+import { createAcceptanceService } from "./acceptance-service.mjs";
 
 export function createManagerService(deps) {
   const {
@@ -16,6 +17,7 @@ export function createManagerService(deps) {
     ? createDailyTaskGenerator({ tasks, projectOps: deps.projectOps })
     : { materialize: async () => [] });
   const nowDate = () => deps.clock?.now?.() || new Date();
+  const acceptance = deps.acceptance || createAcceptanceService({ tasks, ops, analyzer, acceptances: deps.projectOps, transaction, clock: deps.clock });
 
   async function ingest({ messageId, text, chatId = "", senderId = "" }) {
     if (settings.managerUserId && senderId && senderId !== settings.managerUserId) {
@@ -107,6 +109,11 @@ export function createManagerService(deps) {
     }
 
     const task = resolution.task;
+    if (input.action === "complete" && task.requiresEvidence) {
+      const pending = await acceptance.request(task, { idempotencyKey: input.idempotencyKey });
+      ops.cancelPendingReminders(task.id);
+      return { action: "evidence_required", task: tasks.findById(task.id), acceptance: pending };
+    }
     if (input.action === "complete_checkpoint") {
       const checkpointIndex = Number(input.checkpointIndex);
       if (!Number.isInteger(checkpointIndex) || checkpointIndex < 0) {
@@ -352,6 +359,9 @@ export function createManagerService(deps) {
   return {
     ingest,
     handleAction,
+    submitEvidence: (input) => acceptance.submit(input),
+    decideAcceptance: (input) => acceptance.decideByUser(input),
+    listPendingAcceptance: () => tasks.listByStatus("pending_acceptance"),
     replanDay,
     dispatchDay,
     runMiddayCheck,

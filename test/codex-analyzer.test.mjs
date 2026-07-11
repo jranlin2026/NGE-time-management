@@ -67,6 +67,20 @@ test("returns a fixed 15-minute minimum action", async () => {
   assert.deepEqual(result, { action: "打开相机，把第一条完整说一遍", minutes: 15 });
 });
 
+test("analyzes acceptance with the restricted decision schema", async () => {
+  let invocation;
+  const analyzer = createCodexAnalyzer({}, {
+    run: async (input) => {
+      invocation = input;
+      return JSON.stringify({ status: "needs_user_confirmation", explanation: "链接无法访问" });
+    },
+  });
+  const result = await analyzer.analyzeAcceptance({ task: { title: "发布视频" }, evidence: [{ type: "url", value: "https://example.com" }] });
+  assert.equal(result.status, "needs_user_confirmation");
+  assert.equal(invocation.mode, "acceptance");
+  assert.match(invocation.schemaPath, /codex-acceptance-schema\.json$/);
+});
+
 test("fallback is deterministic", () => {
   assert.deepEqual(fallbackTaskAnalysis(" 写完方案 "), {
     intent: "create_task",

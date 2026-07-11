@@ -24,6 +24,8 @@ import {
   renderProjectSetupCard,
   renderReviewCard,
   renderWeeklyPlanCard,
+  renderEvidenceRequestCard,
+  renderAcceptanceReviewCard,
 } from "./lib/feishu-cards.mjs";
 import {
   extractCardAction,
@@ -218,7 +220,7 @@ export async function connectFeishu(config, { manager, tasks, ops, projectRepo, 
     "card.action.trigger": async (data) => {
       const extracted = extractCardAction(data);
       const action = extracted ? normalizeManagerAction(extracted) : null;
-      if (["start", "confirm_project_setup", "confirm_weekly_plan", "adjust_weekly_plan"].includes(action?.action)) {
+      if (["start", "confirm_project_setup", "confirm_weekly_plan", "adjust_weekly_plan", "accept_evidence", "reject_evidence"].includes(action?.action)) {
         try {
           return await handleCardAction(action);
         } catch (error) {
@@ -255,7 +257,7 @@ export async function connectFeishu(config, { manager, tasks, ops, projectRepo, 
 
 export function createMessageHandler({ config, manager, ops, weeklyPlanning }) {
   return async function handleMessage(message) {
-    if (message.kind !== "message" || !message.text) return;
+    if (message.kind !== "message") return;
     if ((!config.feishuReceiveId || (message.chatId && config.feishuReceiveIdType !== "chat_id")) && (message.chatId || message.senderId)) {
       const destination = selectReplyDestination(message);
       config.feishuReceiveId = destination.receiveId;
@@ -263,6 +265,11 @@ export function createMessageHandler({ config, manager, ops, weeklyPlanning }) {
       ops.setSetting("feishu_receive_id", destination.receiveId);
       ops.setSetting("feishu_receive_destination", destination);
     }
+    if (message.evidence?.length) {
+      const pending = manager.listPendingAcceptance?.() || [];
+      if (pending.length === 1) return manager.submitEvidence({ taskId: pending[0].id, evidence: message.evidence, idempotencyKey: `message:${message.messageId}` });
+    }
+    if (!message.text) return;
     const action = normalizeManagerAction(message.text);
     if (action?.action === "adjust_weekly_plan") {
       const pending = ops.getSetting("pending_weekly_adjustment");
@@ -288,6 +295,10 @@ export function createMessageHandler({ config, manager, ops, weeklyPlanning }) {
 
 export function createCardActionHandler({ manager, projectRepo, weeklyPlanning, ops }) {
   return async function handleCardAction(action) {
+    if (["accept_evidence", "reject_evidence"].includes(action.action)) {
+      const result = await manager.decideAcceptance({ taskId: action.taskId, accepted: action.action === "accept_evidence", idempotencyKey: action.idempotencyKey });
+      return { toast: { type: "success", content: result.status === "accepted" ? "验收通过" : "已退回继续完成" } };
+    }
     if (action.action === "confirm_weekly_plan") {
       const plan = await weeklyPlanning.confirm({
         weekId: String(action.weekId).trim(),
@@ -381,6 +392,8 @@ function cardForOutbox(row, { tasks, settings }) {
   if (row.payload.card) return row.payload.card;
   if (row.kind === "weekly_plan_card") return renderWeeklyPlanCard(row.payload);
   if (row.kind === "project_setup_card") return renderProjectSetupCard(row.payload);
+  if (row.kind === "evidence_request_card") return renderEvidenceRequestCard(row.payload);
+  if (row.kind === "acceptance_review_card") return renderAcceptanceReviewCard(row.payload);
   if (row.kind === "current_task_card") {
     return renderCurrentTaskCard({ task: row.payload.task, startsAt: "按计划", endsAt: "完成为止" });
   }

@@ -103,6 +103,26 @@ export function renderConfirmedProjectSetupCard(projects) {
   ]);
 }
 
+export function renderEvidenceRequestCard({ task }) {
+  return card("请提交完成证据", "orange", [
+    markdown(`**${task.title}**\n完成标准：${task.doneDefinition || "提交可检查的产出"}\n\n请回复结果链接、数量或文件/图片。`),
+  ]);
+}
+
+export function renderAcceptanceReviewCard({ task, evidence = [], decision = {} }) {
+  return card("完成证据待人工确认", "orange", [
+    markdown([
+      `**${task.title}**`,
+      `自动判断：${decision.explanation || "证据无法自动检查"}`,
+      `证据：${evidence.map((item) => item.value).filter(Boolean).join("｜") || "无可显示内容"}`,
+    ].join("\n")),
+    buttonRow([
+      button("确认通过", "accept_evidence", task.id, "primary"),
+      button("退回继续做", "reject_evidence", task.id, "danger"),
+    ]),
+  ]);
+}
+
 function card(title, template, elements) {
   return {
     schema: "2.0",

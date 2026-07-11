@@ -9,6 +9,7 @@ const MINIMUM_ACTION_SCHEMA = fileURLToPath(
   new URL("./codex-minimum-action-schema.json", import.meta.url),
 );
 const WEEKLY_PLAN_SCHEMA = fileURLToPath(new URL("./codex-weekly-plan-schema.json", import.meta.url));
+const ACCEPTANCE_SCHEMA = fileURLToPath(new URL("./codex-acceptance-schema.json", import.meta.url));
 
 const QUADRANTS = new Set(["重要且紧急", "重要不紧急", "不重要但紧急", "不重要不紧急"]);
 const IMPORTANCE = new Set(["S", "A", "B", "C"]);
@@ -54,6 +55,25 @@ export function createCodexAnalyzer(config = {}, deps = {}) {
       } catch {
         return { action: task?.nextAction || "先做当前任务的第一个可见动作", minutes: 15 };
       }
+    },
+
+    async analyzeAcceptance({ task, evidence }) {
+      const text = await run({
+        mode: "acceptance",
+        schemaPath: ACCEPTANCE_SCHEMA,
+        prompt: [
+          "判断证据是否满足任务完成标准。只能输出 accepted、rejected 或 needs_user_confirmation。",
+          `任务：${JSON.stringify(task)}`,
+          `证据：${JSON.stringify(evidence)}`,
+          "证据不可访问、含糊或无法可靠判断时，必须 needs_user_confirmation。",
+        ].join("\n"),
+      });
+      const parsed = JSON.parse(text);
+      if (!["accepted", "rejected", "needs_user_confirmation"].includes(parsed?.status)) {
+        throw new Error("invalid acceptance status");
+      }
+      if (typeof parsed.explanation !== "string") throw new Error("acceptance explanation is required");
+      return parsed;
     },
 
     async analyzeWeeklyPlan({ weekId, projects, previousPlan = null }) {

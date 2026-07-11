@@ -130,11 +130,13 @@ export function createProjectOperationsRepository(db, deps = {}) {
 
   function decideAcceptance(input) {
     const acceptanceId = input.id || input.acceptanceId;
+    const current = getAcceptance(acceptanceId);
     const result = db.prepare(`UPDATE task_acceptances
-      SET status = ?, explanation = ?, decided_at = ? WHERE id = ?`).run(
+      SET status = ?, explanation = ?, evidence_json = ?, decided_at = ? WHERE id = ?`).run(
       input.status,
       input.explanation || "",
-      input.decidedAt || now(),
+      JSON.stringify(input.evidence ?? current?.evidence ?? []),
+      input.decidedAt === undefined ? now() : input.decidedAt,
       acceptanceId,
     );
     if (!result.changes) throw new Error(`acceptance not found: ${acceptanceId}`);

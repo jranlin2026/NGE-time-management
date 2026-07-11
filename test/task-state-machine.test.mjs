@@ -18,6 +18,10 @@ test("applies legal task transitions", () => {
   assert.equal(transitionTask({ task: done, action: "restore", at: NOW }).patch.status, "ready");
 });
 
+test("routes an evidence-gated task into pending acceptance", () => {
+  assert.equal(transitionTask({ task: doing, action: "request_acceptance", at: NOW }).patch.status, "pending_acceptance");
+});
+
 test("rejects illegal transitions and only explicit restore reopens done", () => {
   assert.throws(() => transitionTask({ task: done, action: "start", at: NOW }), /illegal transition/);
   assert.throws(() => transitionTask({ task: done, action: "complete", at: NOW }), /illegal transition/);

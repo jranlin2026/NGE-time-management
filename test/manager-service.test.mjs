@@ -84,6 +84,17 @@ test("completes a task and replans future blocks", async () => {
   db.close();
 });
 
+test("requires evidence before completing a project deliverable", async () => {
+  const { db, tasks, ops, manager } = setup();
+  const task = tasks.create({ id: "critical", rawInput: "发布视频", title: "发布视频", status: "doing", requiresEvidence: true });
+  const result = await manager.handleAction({ action: "complete", taskId: task.id, idempotencyKey: "complete-1" });
+
+  assert.equal(result.action, "evidence_required");
+  assert.equal(tasks.findById(task.id).status, "pending_acceptance");
+  assert.equal(ops.listOutbox().at(-1).kind, "evidence_request_card");
+  db.close();
+});
+
 test("completes one checkpoint without completing the parent task", async () => {
   const { db, tasks, ops, manager } = setup();
   const task = tasks.create({

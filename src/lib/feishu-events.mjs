@@ -24,6 +24,20 @@ export function extractMessageText(eventBody = {}) {
   const event = eventBody.event || eventBody;
   const message = event.message || event;
   const messageType = message.message_type || event.message_type || "text";
+  if (["image", "file"].includes(messageType)) {
+    const content = parseContent(message.content || event.content || "");
+    return {
+      kind: "message",
+      text: "",
+      evidence: [{
+        type: messageType === "image" ? "feishu_image" : "file_reference",
+        value: messageType === "image" ? (content.image_key || "") : (content.file_key || content.file_name || ""),
+      }],
+      messageId: message.message_id || event.message_id || "",
+      chatId: message.chat_id || event.chat_id || "",
+      senderId: event.sender?.sender_id?.open_id || event.sender?.sender_id?.user_id || "",
+    };
+  }
   if (messageType !== "text") {
     return {
       kind: "unsupported",
@@ -34,9 +48,11 @@ export function extractMessageText(eventBody = {}) {
   }
 
   const content = parseContent(message.content || event.content || "");
+  const normalized = normalizeEvidenceMessage(content.text || content);
   return {
     kind: "message",
     text: normalizeInboundText(content.text || content),
+    evidence: normalized.evidence,
     messageId: message.message_id || event.message_id || "",
     chatId: message.chat_id || event.chat_id || "",
     senderId:
@@ -45,6 +61,13 @@ export function extractMessageText(eventBody = {}) {
       event.sender?.sender_id?.union_id ||
       "",
   };
+}
+
+export function normalizeEvidenceMessage(text = "") {
+  const value = normalizeInboundText(text);
+  const evidence = [...value.matchAll(/https?:\/\/[^\s｜|]+/gi)]
+    .map((match) => ({ type: "url", value: match[0].replace(/[，。！？、；：,.!?;:)]+$/, "") }));
+  return { text: value, evidence };
 }
 
 export function selectReplyDestination(message = {}) {

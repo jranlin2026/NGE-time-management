@@ -8,7 +8,23 @@ import {
   isPlanQuery,
   isProcrastinationSignal,
   isTaskLike,
+  normalizeEvidenceMessage,
 } from "../src/lib/feishu-events.mjs";
+
+test("normalizes a submitted result URL as evidence", () => {
+  assert.deepEqual(normalizeEvidenceMessage("提交结果：发布视频｜https://example.com/v/1").evidence, [
+    { type: "url", value: "https://example.com/v/1" },
+  ]);
+});
+
+test("extracts an unreadable Feishu image as a manual-review reference", () => {
+  const result = extractMessageText({ event: { message: {
+    message_id: "om_image", message_type: "image", content: JSON.stringify({ image_key: "img_v2_1" }),
+  } } });
+  assert.equal(result.kind, "message");
+  assert.equal(result.evidence[0].type, "feishu_image");
+  assert.equal(result.evidence[0].value, "img_v2_1");
+});
 
 test("extracts text from Feishu message event", () => {
   const result = extractMessageText({
