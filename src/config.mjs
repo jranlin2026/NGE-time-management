@@ -11,6 +11,7 @@ export function loadConfig(env = process.env) {
   const dataDir = path.resolve(merged.TIME_MASTER_DATA_DIR || path.join(process.cwd(), "data"));
   const schedule = {
     plan: merged.TIME_MASTER_PLAN_TIME || "08:00",
+    weeklyPlan: merged.TIME_MASTER_WEEKLY_PLAN_TIME || "22:00",
     firstTask: merged.TIME_MASTER_FIRST_TASK_TIME || "10:00",
     midday: merged.TIME_MASTER_MIDDAY_TIME || "12:00",
     afternoon: merged.TIME_MASTER_AFTERNOON_TIME || "14:00",
@@ -44,6 +45,7 @@ export function loadConfig(env = process.env) {
     codexTimeoutMs: Number(merged.CODEX_TIMEOUT_MS || 45_000),
     timezone: merged.TIME_MASTER_TIMEZONE || "Asia/Shanghai",
     managerUserId: merged.TIME_MASTER_USER_ID || "",
+    capacityRatio: Number(merged.TIME_MASTER_CAPACITY_RATIO || 0.7),
     schedule,
   };
 }

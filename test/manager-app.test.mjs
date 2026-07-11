@@ -3,7 +3,42 @@ import test from "node:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createCardActionHandler, createManagerApp, createMessageHandler, renderCardActionResponse } from "../src/manager-app.mjs";
+import { createCardActionHandler, createManagerApp, createMessageHandler, renderCardActionResponse, seedFixedReminders } from "../src/manager-app.mjs";
+import { openDatabase } from "../src/db/database.mjs";
+import { createOperationsRepository } from "../src/db/operations-repository.mjs";
+
+test("seeds four idempotent Sunday weekly-plan reminders in the configured timezone", () => {
+  const db = openDatabase(":memory:");
+  const ops = createOperationsRepository(db);
+  const input = {
+    now: new Date("2026-07-12T00:00:00.000Z"),
+    config: { schedule: { weeklyPlan: "22:00", plan: "08:00", midday: "12:00", afternoon: "14:00", dayClose: "18:00", eveningStart: "20:00", eveningEnd: "24:00" } },
+    settings: { timezone: "Asia/Shanghai" }, ops,
+  };
+
+  seedFixedReminders(input);
+  seedFixedReminders(input);
+
+  const weekly = ops.listReminders({ status: "pending" }).filter((item) => item.kind === "weekly_plan");
+  assert.equal(weekly.length, 4);
+  assert.equal(weekly[0].dueAt, "2026-07-12T14:00:00.000Z");
+  assert.equal(weekly[0].idempotencyKey, "fixed:weekly-plan:2026-W28");
+  db.close();
+});
+
+test("weekly-plan reminder follows local Sunday time across daylight-saving changes", () => {
+  const db = openDatabase(":memory:");
+  const ops = createOperationsRepository(db);
+  seedFixedReminders({
+    now: new Date("2026-10-25T12:00:00.000Z"),
+    config: { schedule: { weeklyPlan: "22:00", plan: "08:00", midday: "12:00", afternoon: "14:00", dayClose: "18:00", eveningStart: "20:00", eveningEnd: "24:00" } },
+    settings: { timezone: "America/New_York" }, ops,
+  });
+  const weekly = ops.listReminders({ status: "pending" }).filter((item) => item.kind === "weekly_plan");
+  assert.equal(weekly[0].dueAt, "2026-10-26T02:00:00.000Z");
+  assert.equal(weekly[1].dueAt, "2026-11-02T03:00:00.000Z");
+  db.close();
+});
 
 test("start callback replaces the source card with a doing-state card", () => {
   const response = renderCardActionResponse(
@@ -151,6 +186,26 @@ test("app exposes a callable weekly generation path after setup", async () => {
 
   await app.generateWeeklyPlan({ weekId: "2026-W29" });
   assert.deepEqual(generated, [{ weekId: "2026-W29" }]);
+  await app.stop();
+});
+
+test("Sunday reminder generates the matching ISO-week draft through the composed service", async () => {
+  let now = new Date("2026-07-12T13:59:00.000Z");
+  const generated = [];
+  const app = createManagerApp({
+    dbPath: ":memory:", kbDir: "/unused", backupDir: "/unused", markdownExportDir: "/unused",
+    timezone: "Asia/Shanghai", feishuReceiveId: "owner",
+    schedule: { weeklyPlan: "22:00", plan: "08:00", firstTask: "10:00", midday: "12:00", afternoon: "14:00", dayClose: "18:00", eveningStart: "20:00", eveningEnd: "24:00", noResponseMinutes: 10 },
+  }, {
+    clock: { now: () => now },
+    projectRepo: { ensureDraftTemplates: async () => ({ projects: [] }) }, weeklyPlanRepo: {},
+    weeklyPlanning: { generateDraft: async (input) => { generated.push(input); } },
+    connectFeishu: async () => ({ stop: async () => {} }), setInterval: () => 1, clearInterval: () => {},
+  });
+  await app.start();
+  now = new Date("2026-07-12T14:01:00.000Z");
+  await app.state.reminderEngine.processDue();
+  assert.deepEqual(generated, [{ weekId: "2026-W28" }]);
   await app.stop();
 });
 

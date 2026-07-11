@@ -39,3 +39,21 @@ test("invalidates stale reminders, preserves future reminders, and sends one rec
   assert.equal(ops.listOutbox().filter((row) => row.kind === "recovery_plan_card").length, 1);
   db.close();
 });
+
+test("reconciles project state before publishing the recovered plan", async () => {
+  const now = "2026-07-12T01:00:00.000Z";
+  const db = openDatabase(":memory:");
+  const tasks = createTaskRepository(db, { now: () => now });
+  const ops = createOperationsRepository(db, { now: () => now });
+  let calls = 0;
+
+  await recoverManagerState({
+    now, date: "2026-07-12", tasks, ops,
+    reconcileProjects: async () => { calls += 1; return [{ projectId: "personal-ip", acceptanceId: "acceptance-1" }]; },
+    replan: async () => ({ version: 1, blocks: [] }),
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(ops.listEvents({ kind: "project_sync_reconciled" }).length, 1);
+  db.close();
+});

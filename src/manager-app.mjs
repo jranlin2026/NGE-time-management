@@ -9,6 +9,8 @@ import { createCodexAnalyzer } from "./lib/codex-analyzer.mjs";
 import { createProjectMarkdownRepository } from "./lib/project-markdown-repository.mjs";
 import { createWeeklyPlanRepository } from "./lib/weekly-plan-repository.mjs";
 import { createWeeklyPlanningService } from "./lib/weekly-planning-service.mjs";
+import { createDailyTaskGenerator, isoWeekId } from "./lib/daily-task-generator.mjs";
+import { createAcceptanceService } from "./lib/acceptance-service.mjs";
 import { createManagerService } from "./lib/manager-service.mjs";
 import { createReminderEngine } from "./lib/reminder-engine.mjs";
 import { createOutboxWorker } from "./lib/outbox-worker.mjs";
@@ -60,8 +62,13 @@ export function createManagerApp(config, deps = {}) {
   }
   const settings = loadManagerSettings(config, ops);
   const analyzer = deps.analyzer || createCodexAnalyzer(config);
+  const transaction = (fn) => withTransaction(db, fn);
   const weeklyPlanning = deps.weeklyPlanning || createWeeklyPlanningService({
-    projectRepo, weeklyPlanRepo, projectOps, ops, analyzer, transaction: (fn) => withTransaction(db, fn),
+    projectRepo, weeklyPlanRepo, projectOps, ops, analyzer, transaction,
+  });
+  const dailyTaskGenerator = deps.dailyTaskGenerator || createDailyTaskGenerator({ tasks, projectOps });
+  const acceptance = deps.acceptance || createAcceptanceService({
+    tasks, ops, acceptances: projectOps, projectRepo, analyzer, transaction, clock,
   });
   let manager;
 
@@ -113,6 +120,9 @@ export function createManagerApp(config, deps = {}) {
           now: reminder.dueAt,
         });
       },
+      weekly_plan: (reminder) => weeklyPlanning.generateDraft({
+        weekId: isoWeekId(localDate(new Date(reminder.dueAt), settings.timezone)),
+      }),
       midday: (reminder) => manager.runMiddayCheck({
         date: localDate(new Date(reminder.dueAt), settings.timezone),
         now: reminder.dueAt,
@@ -138,7 +148,7 @@ export function createManagerApp(config, deps = {}) {
 
   manager = createManagerService({
     db,
-    transaction: (fn) => withTransaction(db, fn),
+    transaction,
     tasks,
     ops,
     projectOps,
@@ -147,6 +157,8 @@ export function createManagerApp(config, deps = {}) {
     reminderEngine,
     clock,
     settings,
+    dailyTaskGenerator,
+    acceptance,
   });
 
   const outboxWorker = createOutboxWorker({
@@ -179,6 +191,7 @@ export function createManagerApp(config, deps = {}) {
       tasks,
       ops,
       replan: (input) => manager.replanDay({ reason: input.reason, date: input.date, now: input.now }),
+      reconcileProjects: deps.reconcileProjects || (() => reconcileProjectWrites({ tasks, ops, projectOps, projectRepo, acceptance })),
     });
     const connect = deps.connectFeishu || connectFeishu;
     connector = await connect(config, { manager, tasks, ops, projectRepo, weeklyPlanning });
@@ -199,7 +212,7 @@ export function createManagerApp(config, deps = {}) {
     start,
     stop,
     generateWeeklyPlan: (input) => weeklyPlanning.generateDraft(input),
-    state: { db, tasks, ops, projectOps, projectRepo, weeklyPlanRepo, weeklyPlanning, manager, reminderEngine, outboxWorker, settings },
+    state: { db, tasks, ops, projectOps, projectRepo, weeklyPlanRepo, weeklyPlanning, dailyTaskGenerator, acceptance, manager, reminderEngine, outboxWorker, settings },
   };
 }
 
@@ -376,6 +389,18 @@ export function seedFixedReminders({ now, config, settings, ops }) {
       });
     }
   }
+  const firstSunday = addDays(today, (7 - dayOfWeek(today)) % 7);
+  for (let offset = 0; offset < 28; offset += 7) {
+    const date = addDays(firstSunday, offset);
+    const dueAt = zonedDateTimeToUtc(date, config.schedule.weeklyPlan || "22:00", settings.timezone);
+    const weekId = isoWeekId(date);
+    ops.enqueueReminder({
+      kind: "weekly_plan",
+      dueAt: dueAt.toISOString(),
+      expiresAt: new Date(dueAt.getTime() + 12 * 60 * 60_000).toISOString(),
+      idempotencyKey: `fixed:weekly-plan:${weekId}`,
+    });
+  }
 }
 
 async function deliverOutbox(config, row, { tasks, ops, settings }) {
@@ -464,6 +489,33 @@ async function importLegacyTasksOnce(config, tasks, ops) {
   ops.setSetting("legacy_markdown_imported", { imported, at: new Date().toISOString() });
 }
 
+async function reconcileProjectWrites({ tasks, ops, projectOps, projectRepo, acceptance }) {
+  const reconciled = [];
+  for (const event of ops.listEvents({ kind: "project_sync_reconciliation_required" })) {
+    const acceptanceId = event.payload?.acceptanceId;
+    if (!acceptanceId || ops.findEventByIdempotencyKey(`project-sync-reconciled:${acceptanceId}`)) continue;
+    const task = tasks.findById(event.taskId);
+    const pending = projectOps.getAcceptance(acceptanceId);
+    if (!task || task.status !== "pending_acceptance" || pending?.status !== "pending") continue;
+    const project = await projectRepo.readProject(task.projectId);
+    const deliverable = project.milestones.flatMap((milestone) => milestone.deliverables || [])
+      .find((item) => item.id === task.deliverableId);
+    if (deliverable?.status !== "accepted" || !deliverable.evidence) continue;
+    const evidence = [{
+      type: /^https?:\/\//i.test(deliverable.evidence) ? "url" : "text",
+      value: deliverable.evidence,
+    }];
+    const result = await acceptance.submit({
+      taskId: task.id,
+      evidence,
+      idempotencyKey: `recovery-project-sync:${acceptanceId}`,
+    });
+    if (result.status !== "accepted" || tasks.findById(task.id)?.status !== "done") continue;
+    reconciled.push({ taskId: task.id, projectId: task.projectId, acceptanceId });
+  }
+  return reconciled;
+}
+
 function loadManagerSettings(config, ops) {
   const existing = ops.getSetting("manager_settings");
   const coachDefaults = {
@@ -474,7 +526,7 @@ function loadManagerSettings(config, ops) {
       [config.schedule.afternoon, config.schedule.eveningEnd],
     ],
     maxCriticalTasks: 5,
-    capacityRatio: 0.7,
+    capacityRatio: Number(config.capacityRatio ?? 0.7),
     projectMinimumMinutes: 60,
     noResponseMinutes: config.schedule.noResponseMinutes || 15,
     projectMinimums: { "个人IP": 2, "极享OS": 2 },
@@ -498,6 +550,10 @@ function addDays(date, count) {
   const value = new Date(`${date}T00:00:00.000Z`);
   value.setUTCDate(value.getUTCDate() + count);
   return value.toISOString().slice(0, 10);
+}
+
+function dayOfWeek(date) {
+  return new Date(`${date}T00:00:00.000Z`).getUTCDay();
 }
 
 function localDate(date, timezone) {

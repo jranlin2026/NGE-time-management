@@ -1,9 +1,19 @@
-export async function recoverManagerState({ now, date, tasks, ops, replan }) {
+export async function recoverManagerState({ now, date, tasks, ops, replan, reconcileProjects }) {
   ops.expireStaleReminders(now);
   for (const reminder of ops.listReminders({ status: "pending" })) {
     if (reminder.dueAt <= now) {
       ops.updateReminder(reminder.id, { status: "expired" });
     }
+  }
+
+  const reconciledProjects = await reconcileProjects?.() || [];
+  for (const reconciled of reconciledProjects) {
+    ops.appendEvent({
+      taskId: reconciled.taskId || null,
+      kind: "project_sync_reconciled",
+      payload: reconciled,
+      idempotencyKey: `project-sync-reconciled:${reconciled.acceptanceId || reconciled.projectId}`,
+    });
   }
 
   const currentTask = tasks.findDoing();
@@ -30,5 +40,5 @@ export async function recoverManagerState({ now, date, tasks, ops, replan }) {
     idempotencyKey: `recovery-event:${date}:${version}`,
   });
 
-  return { currentTask, schedule };
+  return { currentTask, schedule, reconciledProjects };
 }

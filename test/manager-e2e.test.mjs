@@ -7,6 +7,83 @@ import { createProjectOperationsRepository } from "../src/db/project-operations-
 import { createReminderEngine } from "../src/lib/reminder-engine.mjs";
 import { createManagerService } from "../src/lib/manager-service.mjs";
 import { buildDailyReview } from "../src/lib/daily-review.mjs";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createManagerApp } from "../src/manager-app.mjs";
+
+test("composed app runs weekly plan through evidence acceptance and project progress", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "manager-loop-e2e-"));
+  await fs.mkdir(path.join(root, "项目"), { recursive: true });
+  await fs.writeFile(path.join(root, "项目", "个人IP.md"), `---
+project_id: personal-ip
+name: 个人IP
+status: active
+priority: 1
+updated_at: 2026-07-12T08:00:00+08:00
+---
+
+# 个人IP
+
+<!-- time-manager:managed:start -->
+## 当前阶段
+
+内容验证
+
+## 里程碑
+
+| milestone_id | 名称 | 截止时间 | 项目权重 | 状态 |
+| --- | --- | --- | ---: | --- |
+| content-validation | 内容验证 | 2026-07-31 | 100 | active |
+
+## 里程碑交付项
+
+| deliverable_id | milestone_id | 交付项 | 里程碑权重 | 状态 | 验收证据 |
+| --- | --- | --- | ---: | --- | --- |
+| video-01 | content-validation | 发布首条短视频 | 10 | pending | |
+| remaining | content-validation | 后续内容 | 90 | pending | |
+
+## 当前风险
+
+- 暂无。
+
+## 下一步候选
+
+- 发布首条短视频。
+
+## 最近一次实质成果
+
+尚无。
+<!-- time-manager:managed:end -->
+`, "utf8");
+  const analyzer = {
+    analyzeWeeklyPlan: async ({ weekId }) => ({ weekId, outcomes: ["发布首条短视频"], deliverableChanges: [], tasks: [{
+      taskId: "publish-video-01", projectId: "personal-ip", projectName: "个人IP",
+      milestoneId: "content-validation", deliverableId: "video-01", deliverable: "发布首条短视频",
+      title: "发布首条短视频", suggestedDate: "2026-07-13", requiresEvidence: true,
+      impact: "high", minutes: 90, date: "2026-07-13", completionStandard: "公开视频上线",
+    }] }),
+    analyzeAcceptance: async () => ({ status: "accepted", explanation: "链接证据有效" }),
+  };
+  const app = createManagerApp({
+    dbPath: ":memory:", dataDir: root, kbDir: root, backupDir: path.join(root, "backups"), markdownExportDir: path.join(root, "exports"),
+    timezone: "Asia/Shanghai", feishuReceiveId: "owner", managerUserId: "owner", capacityRatio: 0.7,
+    schedule: { weeklyPlan: "22:00", plan: "08:00", firstTask: "10:00", midday: "12:00", afternoon: "14:00", dayClose: "18:00", eveningStart: "20:00", eveningEnd: "24:00", noResponseMinutes: 10 },
+  }, { analyzer });
+
+  await app.state.weeklyPlanning.generateDraft({ weekId: "2026-W29" });
+  await app.state.weeklyPlanning.confirm({ weekId: "2026-W29", version: 1, eventId: "confirm-1" });
+  await app.state.manager.dispatchDay({ date: "2026-07-13", now: "2026-07-13T00:00:00.000Z" });
+  const task = app.state.tasks.listActive().find((item) => item.deliverableId === "video-01");
+  await app.state.manager.handleAction({ action: "start", taskId: task.id, idempotencyKey: "start-1" });
+  await app.state.manager.handleAction({ action: "complete", taskId: task.id, idempotencyKey: "complete-1" });
+  await app.state.acceptance.submit({ taskId: task.id, evidence: [{ type: "url", value: "https://example.com/v/1" }], idempotencyKey: "evidence-1" });
+
+  assert.equal(app.state.tasks.findById(task.id).status, "done");
+  assert.equal((await app.state.projectRepo.readProject("personal-ip")).progress, 10);
+  await app.stop();
+  await fs.rm(root, { recursive: true, force: true });
+});
 
 test("runs plan, two-stage no-response, replan, midday, close, and review", async () => {
   let now = new Date("2026-07-10T00:30:00.000Z");
