@@ -341,26 +341,28 @@ async function importLegacyTasksOnce(config, tasks, ops) {
 
 function loadManagerSettings(config, ops) {
   const existing = ops.getSetting("manager_settings");
-  if (existing) {
-    return {
-      ...existing,
-      managerUserId: config.managerUserId || existing.managerUserId || "",
-    };
-  }
-  const settings = {
+  const coachDefaults = {
     timezone: config.timezone || "Asia/Shanghai",
     managerUserId: config.managerUserId || "",
     windows: [
       [config.schedule.firstTask, "12:00"],
-      [config.schedule.afternoon, config.schedule.dayClose],
-      [config.schedule.eveningStart, config.schedule.eveningEnd],
+      [config.schedule.afternoon, config.schedule.eveningEnd],
     ],
-    maxCriticalTasks: 3,
+    maxCriticalTasks: 5,
     noResponseMinutes: config.schedule.noResponseMinutes || 15,
+    projectMinimums: { "个人IP": 2, "极享OS": 2 },
+    projectWindows: {
+      "个人IP": [["10:00", "12:00"], ["14:00", "16:00"]],
+      "极享OS": [["10:00", "12:00"], ["14:00", "24:00"]],
+    },
     projectBoosts: [
       { project: "个人IP", points: 100, startsOn: "2026-07-10", endsOn: "2026-07-15" },
     ],
+    coachRulesVersion: 2,
   };
+  const settings = existing?.coachRulesVersion >= 2
+    ? { ...coachDefaults, ...existing, managerUserId: config.managerUserId || existing.managerUserId || "" }
+    : { ...existing, ...coachDefaults, managerUserId: config.managerUserId || existing?.managerUserId || "" };
   ops.setSetting("manager_settings", settings);
   return settings;
 }
