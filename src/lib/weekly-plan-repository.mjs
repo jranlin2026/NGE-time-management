@@ -112,25 +112,39 @@ function parse(rawContent, filePath) {
   };
 }
 
-async function publishExclusive(filePath, content, beforeLink) {
+async function syncDirectory(fileSystem, directoryPath) {
+  const handle = await fileSystem.open(directoryPath, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function publishExclusive(fileSystem, filePath, content, beforeLink) {
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   let handle;
   try {
-    handle = await fs.open(temporaryPath, "wx");
+    handle = await fileSystem.open(temporaryPath, "wx");
     await handle.writeFile(content, "utf8");
     await handle.sync();
     await handle.close();
     handle = undefined;
     await beforeLink?.({ temporaryPath });
-    await fs.link(temporaryPath, filePath);
+    await fileSystem.link(temporaryPath, filePath);
+    await syncDirectory(fileSystem, path.dirname(filePath));
   } finally {
     await handle?.close();
-    await fs.rm(temporaryPath, { force: true });
+    await fileSystem.rm(temporaryPath, { force: true });
+    await syncDirectory(fileSystem, path.dirname(filePath));
   }
 }
 
 function sameApprovedPlan(confirmed, draft) {
-  return confirmed.weekId === draft.weekId
+  return confirmed.status === "confirmed"
+    && Boolean(confirmed.confirmedAt)
+    && !Number.isNaN(Date.parse(confirmed.confirmedAt))
+    && confirmed.weekId === draft.weekId
     && confirmed.version === draft.version
     && confirmed.createdAt === draft.createdAt
     && JSON.stringify(confirmed.outcomes) === JSON.stringify(draft.outcomes)
@@ -141,6 +155,7 @@ function sameApprovedPlan(confirmed, draft) {
 export function createWeeklyPlanRepository({
   kbDir,
   now = () => new Date().toISOString(),
+  fileSystem = fs,
   beforeDraftVerification,
   afterApprovedDraftRead,
   beforeCanonicalLink,
@@ -176,7 +191,7 @@ export function createWeeklyPlanRepository({
     const filePath = draftFor(weekId, version);
     const content = render(input);
     try {
-      await publishExclusive(filePath, content);
+      await publishExclusive(fileSystem, filePath, content);
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       const existing = await fs.readFile(filePath, "utf8");
@@ -198,7 +213,7 @@ export function createWeeklyPlanRepository({
     const canonicalPath = canonicalFor(weekId);
     await afterApprovedDraftRead?.({ draftPath, canonicalPath });
     try {
-      await publishExclusive(canonicalPath, content, ({ temporaryPath }) =>
+      await publishExclusive(fileSystem, canonicalPath, content, ({ temporaryPath }) =>
         beforeCanonicalLink?.({ draftPath, canonicalPath, temporaryPath }));
     } catch (error) {
       if (error.code !== "EEXIST") throw error;

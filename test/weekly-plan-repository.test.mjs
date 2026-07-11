@@ -109,6 +109,37 @@ test("publishes only through an exclusive link without removing draft or canonic
   assert.match(await fs.readFile(path.join(root, "周计划", "2026-W29.md"), "utf8"), /status: confirmed/);
 });
 
+test("syncs the containing directory after link and again after temp cleanup", async () => {
+  const calls = [];
+  const fileSystem = {
+    ...fs,
+    link: async (...args) => {
+      await fs.link(...args);
+      calls.push("link");
+    },
+    rm: async (filePath, options) => {
+      await fs.rm(filePath, options);
+      if (filePath.endsWith(".tmp")) calls.push("remove-temp");
+    },
+    open: async (filePath, flags) => {
+      const handle = await fs.open(filePath, flags);
+      if (!filePath.endsWith(".tmp")) {
+        return {
+          sync: async () => { calls.push("directory-sync"); await handle.sync(); },
+          close: () => handle.close(),
+        };
+      }
+      return handle;
+    },
+  };
+  const repo = createWeeklyPlanRepository({ kbDir: root, fileSystem });
+  const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
+  calls.length = 0;
+  await repo.confirm({ weekId: "2026-W29", version: 1, expectedHash: draft.contentHash });
+
+  assert.deepEqual(calls, ["link", "directory-sync", "remove-temp", "directory-sync"]);
+});
+
 test("never mutates an existing different canonical plan", async () => {
   const repo = createWeeklyPlanRepository({ kbDir: root });
   const first = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
@@ -120,6 +151,24 @@ test("never mutates an existing different canonical plan", async () => {
     weekId: "2026-W29", version: 2, expectedHash: second.contentHash,
   }), /confirmed weekly plan is immutable/);
   assert.equal(await fs.readFile(confirmed.filePath, "utf8"), canonicalBytes);
+});
+
+test("rejects same-plan canonical files that are not valid confirmations", async () => {
+  for (const mutate of [
+    (content) => content.replace("status: confirmed", "status: draft"),
+    (content) => content.replace(/^confirmed_at:.*$/m, "confirmed_at: "),
+    (content) => content.replace(/^confirmed_at:.*$/m, "confirmed_at: not-a-timestamp"),
+  ]) {
+    const iterationRoot = await fs.mkdtemp(path.join(root, "invalid-canonical-"));
+    const repo = createWeeklyPlanRepository({ kbDir: iterationRoot });
+    const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
+    const confirmed = await repo.confirm({ weekId: "2026-W29", version: 1, expectedHash: draft.contentHash });
+    await fs.writeFile(confirmed.filePath, mutate(confirmed.rawContent), "utf8");
+
+    await assert.rejects(() => repo.confirm({
+      weekId: "2026-W29", version: 1, expectedHash: draft.contentHash,
+    }), /confirmed weekly plan is immutable/);
+  }
 });
 
 test("reads and confirms a CRLF weekly plan", async () => {
