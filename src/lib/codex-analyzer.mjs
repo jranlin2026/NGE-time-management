@@ -8,6 +8,7 @@ const TASK_SCHEMA = fileURLToPath(new URL("./codex-task-schema.json", import.met
 const MINIMUM_ACTION_SCHEMA = fileURLToPath(
   new URL("./codex-minimum-action-schema.json", import.meta.url),
 );
+const WEEKLY_PLAN_SCHEMA = fileURLToPath(new URL("./codex-weekly-plan-schema.json", import.meta.url));
 
 const QUADRANTS = new Set(["重要且紧急", "重要不紧急", "不重要但紧急", "不重要不紧急"]);
 const IMPORTANCE = new Set(["S", "A", "B", "C"]);
@@ -52,6 +53,21 @@ export function createCodexAnalyzer(config = {}, deps = {}) {
         return parsed;
       } catch {
         return { action: task?.nextAction || "先做当前任务的第一个可见动作", minutes: 15 };
+      }
+    },
+
+    async analyzeWeeklyPlan({ weekId, projects, previousPlan = null }) {
+      try {
+        const text = await run({
+          mode: "weekly_plan",
+          schemaPath: WEEKLY_PLAN_SCHEMA,
+          prompt: buildWeeklyPrompt({ weekId, projects, previousPlan }),
+        });
+        const parsed = JSON.parse(text);
+        validateWeeklyPlan(parsed, projects);
+        return { ...parsed, analysisStatus: "complete" };
+      } catch (error) {
+        return fallbackWeeklyPlan({ weekId, projects, error });
       }
     },
   };
@@ -157,6 +173,99 @@ function buildMinimumActionPrompt({ task, blocker }) {
     })}`,
     `卡点：${JSON.stringify(String(blocker || ""))}`,
   ].join("\n");
+}
+
+function buildWeeklyPrompt({ weekId, projects, previousPlan }) {
+  return [
+    "你是个人项目系统中的周计划分析器。只返回 JSON Schema 要求的计划，不修改文件或发送消息。",
+    "每个任务必须绑定项目中现有的待完成交付项，或绑定本计划 deliverableChanges 中同项目、同里程碑新增的交付项。",
+    "任务必须包含可观察的交付物和完成标准；绑定交付项时 requiresEvidence 必须为 true。",
+    "不要扩大范围。impact 只能是 normal；只有明确影响极享OS系统使用的 Bug 才可标记 system_unusable_bug。",
+    `计划周：${weekId}`,
+    `项目事实：${JSON.stringify(projects)}`,
+    `上一版计划：${JSON.stringify(previousPlan)}`,
+  ].join("\n");
+}
+
+const WEEKLY_TASK_FIELDS = [
+  "taskId", "projectId", "projectName", "milestoneId", "deliverableId", "title",
+  "deliverable", "completionStandard", "minutes", "date", "requiresEvidence", "impact",
+];
+
+function validateWeeklyPlan(value, projects) {
+  if (!value || typeof value !== "object") throw new Error("weekly plan must be an object");
+  if (!Array.isArray(value.outcomes) || !value.outcomes.every((item) => String(item).trim())) {
+    throw new Error("invalid weekly outcomes");
+  }
+  if (!Array.isArray(value.deliverableChanges) || !Array.isArray(value.tasks)) {
+    throw new Error("weekly plan arrays are missing");
+  }
+  for (const change of value.deliverableChanges) {
+    const project = projects.find((item) => item.id === change.projectId);
+    if (!project) throw new Error(`unknown deliverable change project: ${change.projectId}`);
+    const milestone = project.milestones?.find((item) => item.id === change.milestoneId);
+    if (!milestone) throw new Error(`unknown deliverable change milestone: ${change.milestoneId}`);
+    const existing = milestone.deliverables?.some((item) => item.id === change.deliverableId);
+    if (change.action !== "add" && !existing) {
+      throw new Error(`unknown deliverable change deliverable: ${change.deliverableId}`);
+    }
+  }
+  const proposed = new Set(value.deliverableChanges
+    .filter((change) => change.action === "add")
+    .map((change) => `${change.projectId}\0${change.milestoneId}\0${change.deliverableId}`));
+  const taskIds = new Set();
+  for (const task of value.tasks) {
+    for (const field of WEEKLY_TASK_FIELDS) {
+      if (!(field in task)) throw new Error(`missing weekly task field: ${field}`);
+    }
+    if (!String(task.taskId).trim() || taskIds.has(task.taskId)) throw new Error(`invalid weekly task id: ${task.taskId}`);
+    taskIds.add(task.taskId);
+    const project = projects.find((item) => item.id === task.projectId);
+    if (!project || project.name !== task.projectName) throw new Error(`unknown weekly task project: ${task.projectId}`);
+    const milestone = project.milestones?.find((item) => item.id === task.milestoneId);
+    if (!milestone) throw new Error(`unknown weekly task milestone: ${task.milestoneId}`);
+    const deliverable = milestone.deliverables?.find((item) => item.id === task.deliverableId);
+    const proposedKey = `${task.projectId}\0${task.milestoneId}\0${task.deliverableId}`;
+    if (!deliverable && !proposed.has(proposedKey)) throw new Error(`unknown weekly task deliverable: ${task.deliverableId}`);
+    if (!["pending", "doing", "blocked"].includes(deliverable?.status) && !proposed.has(proposedKey)) {
+      throw new Error(`weekly task deliverable is already accepted: ${task.deliverableId}`);
+    }
+    if (![task.title, task.deliverable, task.completionStandard, task.date].every((item) => String(item).trim())) {
+      throw new Error(`invalid weekly task text: ${task.taskId}`);
+    }
+    if (!Number.isInteger(task.minutes) || task.minutes < 5 || task.minutes > 480) throw new Error("invalid weekly task minutes");
+    if (typeof task.requiresEvidence !== "boolean" || !task.requiresEvidence) throw new Error("project task requires evidence");
+    if (!new Set(["normal", "system_unusable_bug"]).has(task.impact)) throw new Error("invalid weekly task impact");
+  }
+}
+
+function mondayOfIsoWeek(weekId) {
+  const match = /^(\d{4})-W(\d{2})$/.exec(weekId);
+  if (!match) return "";
+  const januaryFourth = new Date(Date.UTC(Number(match[1]), 0, 4));
+  const monday = new Date(januaryFourth);
+  monday.setUTCDate(januaryFourth.getUTCDate() - ((januaryFourth.getUTCDay() + 6) % 7) + (Number(match[2]) - 1) * 7);
+  return monday.toISOString().slice(0, 10);
+}
+
+export function fallbackWeeklyPlan({ weekId, projects, error }) {
+  const date = mondayOfIsoWeek(weekId);
+  const pending = projects.flatMap((project) => (project.milestones ?? []).flatMap((milestone) =>
+    (milestone.deliverables ?? [])
+      .filter((deliverable) => deliverable.status === "pending")
+      .map((deliverable) => ({ project, milestone, deliverable }))));
+  return {
+    outcomes: pending.map(({ deliverable }) => deliverable.name),
+    deliverableChanges: [],
+    tasks: pending.map(({ project, milestone, deliverable }) => ({
+      taskId: `${weekId}:${deliverable.id}`, projectId: project.id, projectName: project.name,
+      milestoneId: milestone.id, deliverableId: deliverable.id, title: deliverable.name,
+      deliverable: deliverable.name, completionStandard: deliverable.evidence || `提交可验收的${deliverable.name}`,
+      minutes: 120, date, requiresEvidence: true, impact: "normal",
+    })),
+    analysisStatus: "failed",
+    analysisError: String(error?.message || error).slice(0, 500),
+  };
 }
 
 function validateTaskAnalysis(value) {
