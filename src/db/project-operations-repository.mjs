@@ -10,6 +10,16 @@ export function createProjectOperationsRepository(db, deps = {}) {
   }
 
   function saveWeeklyPlan(input) {
+    const existing = db.prepare("SELECT * FROM weekly_plans WHERE week_id = ? AND version = ?")
+      .get(input.weekId, input.version);
+    if (existing?.status === "confirmed") {
+      const isUnchanged = input.status === "confirmed"
+        && input.markdownPath === existing.markdown_path
+        && input.contentHash === existing.content_hash
+        && JSON.stringify(input.plan) === existing.plan_json;
+      if (!isUnchanged) throw new Error("confirmed weekly plan cannot be changed");
+      return mapWeeklyPlan(existing);
+    }
     db.prepare(`INSERT INTO weekly_plans
       (week_id,version,markdown_path,content_hash,status,plan_json,created_at)
       VALUES (?,?,?,?,?,?,?)

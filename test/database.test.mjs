@@ -3,6 +3,7 @@ import test from "node:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { openDatabase, withTransaction } from "../src/db/database.mjs";
 
 test("opens a WAL database and creates all version-one tables", async () => {
@@ -58,6 +59,40 @@ test("migration three adds project execution tables and task columns", () => {
       `missing table ${table}`,
     );
   }
+  assert.ok(db.prepare("SELECT 1 FROM schema_migrations WHERE version = 3").get());
+  db.close();
+});
+
+test("upgrades a version-two database without losing tasks and applies new defaults", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "time-manager-v2-"));
+  const file = path.join(dir, "manager.sqlite");
+  const legacy = new DatabaseSync(file);
+  legacy.exec(`
+    CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+    INSERT INTO schema_migrations VALUES (1, '2026-07-01T00:00:00.000Z'), (2, '2026-07-02T00:00:00.000Z');
+    CREATE TABLE tasks (
+      id TEXT PRIMARY KEY, title TEXT NOT NULL, project TEXT NOT NULL DEFAULT '未归类', raw_input TEXT NOT NULL,
+      quadrant TEXT NOT NULL DEFAULT '重要不紧急', importance TEXT NOT NULL DEFAULT 'B', urgency TEXT NOT NULL DEFAULT 'medium',
+      due_at TEXT, status TEXT NOT NULL DEFAULT 'inbox', next_action TEXT NOT NULL, done_definition TEXT NOT NULL,
+      estimate_minutes INTEGER NOT NULL DEFAULT 30, blocker TEXT NOT NULL DEFAULT '', procrastination_count INTEGER NOT NULL DEFAULT 0,
+      source_message_id TEXT UNIQUE, analysis_status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL, checkpoints_json TEXT NOT NULL DEFAULT '[]'
+    );
+    INSERT INTO tasks
+      (id,title,project,raw_input,next_action,done_definition,created_at,updated_at)
+      VALUES ('legacy-task','保留旧任务','个人IP','旧输入','下一步','完成定义','2026-07-01','2026-07-02');
+  `);
+  legacy.close();
+
+  const db = openDatabase(file);
+  const task = db.prepare("SELECT * FROM tasks WHERE id = 'legacy-task'").get();
+  assert.equal(task.title, "保留旧任务");
+  assert.equal(task.raw_input, "旧输入");
+  assert.equal(task.project_id, null);
+  assert.equal(task.milestone_id, null);
+  assert.equal(task.deliverable_id, null);
+  assert.equal(task.requires_evidence, 0);
+  assert.equal(task.impact, "normal");
   assert.ok(db.prepare("SELECT 1 FROM schema_migrations WHERE version = 3").get());
   db.close();
 });

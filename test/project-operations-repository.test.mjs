@@ -50,6 +50,31 @@ test("saves, queries, and idempotently confirms weekly plans", () => {
   db.close();
 });
 
+test("does not downgrade a confirmed weekly plan when the same version is saved as draft", () => {
+  const { db, repo } = setup();
+  const input = {
+    weekId: "2026-W29",
+    version: 1,
+    markdownPath: "/weekly/2026-W29.md",
+    contentHash: "abc",
+    status: "draft",
+    plan: { tasks: [] },
+  };
+  repo.saveWeeklyPlan(input);
+  repo.confirmWeeklyPlan({ weekId: input.weekId, version: input.version, eventId: "evt-confirm" });
+
+  assert.throws(() => repo.saveWeeklyPlan(input), /confirmed weekly plan cannot be changed/);
+  const retried = repo.confirmWeeklyPlan({
+    weekId: input.weekId,
+    version: input.version,
+    eventId: "evt-confirm",
+  });
+  assert.equal(retried.status, "confirmed");
+  assert.equal(retried.confirmationEventId, "evt-confirm");
+  assert.equal(retried.confirmedAt, NOW);
+  db.close();
+});
+
 test("saves acceptances idempotently and decides pending acceptance", () => {
   const { db, repo } = setup();
   createTaskRepository(db, { now: () => NOW, id: () => "task-1" }).create({

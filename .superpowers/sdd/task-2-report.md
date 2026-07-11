@@ -30,3 +30,11 @@
 - Reviewed migration ordering, placeholder counts, boolean conversion, JSON boundaries, missing-record errors, and idempotent duplicate behavior.
 - No Task 1 source files were changed. Markdown remains the formal project source of truth.
 - Concern: SQLite emits its existing experimental-feature warning under Node 24; tests remain clean otherwise.
+
+## Review follow-up
+
+- Added a regression proving that `saveWeeklyPlan` cannot downgrade or mutate an already confirmed week/version and that retrying the original confirmation remains confirmed with intact metadata.
+- Added a real file-backed version-2 upgrade regression with an existing task; reopening via `openDatabase` preserves old values and applies migration-3 defaults (`NULL`, `0`, and `normal`).
+- RED: targeted run failed 1/14 because saving the confirmed version as draft did not throw; the v2 upgrade regression already passed against the migration implementation.
+- GREEN: exact targeted command passed 14/14 after adding the confirmed-plan immutability guard.
+- Full suite after the fix passed 92/92; `git diff --check` passed.
