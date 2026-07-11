@@ -41,6 +41,8 @@ test("second no-response records procrastination, creates one intervention, and 
     ops.listOutbox().map((row) => row.kind),
     ["current_task_card", "no_response_message", "intervention_card"],
   );
+  assert.equal(ops.listOutbox()[1].payload.mentionOwner, true);
+  assert.match(ops.listOutbox()[2].payload.coachText, /效率/);
   assert.equal(ops.listReminders({ status: "pending" }).length, 0);
   db.close();
 });

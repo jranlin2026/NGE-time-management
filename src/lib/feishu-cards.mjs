@@ -33,11 +33,12 @@ export function renderCurrentTaskCard({ task, startsAt, endsAt }) {
   ]);
 }
 
-export function renderInterventionCard({ task, minimumAction, minutes = 15 }) {
+export function renderInterventionCard({ task, minimumAction, minutes = 15, coachText = "" }) {
   return card("任务已缩小", "red", [
     markdown([
       `已记录一次拖延：**${task.title}**`,
       `现在只做 ${minutes} 分钟：**${minimumAction}**`,
+      coachText,
       "不重做计划，不切换项目，完成后直接反馈。",
     ].join("\n")),
     button(`立即开始 ${minutes} 分钟`, "start", task.id, "primary"),

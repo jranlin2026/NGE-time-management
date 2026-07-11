@@ -317,7 +317,7 @@ function cardForOutbox(row, { tasks, settings }) {
 function textForOutbox(row) {
   if (row.kind === "task_ack") return `已入池：${row.payload.title}\n${row.payload.text}`;
   if (row.kind === "status_message") return row.payload.text;
-  if (row.kind === "no_response_message") return `还没有收到反馈：${row.payload.title}\n现在只决定一件事：开始、完成，还是卡住？`;
+  if (row.kind === "no_response_message") return `${row.payload.mentionOwner ? "@你，" : ""}还没有收到反馈：${row.payload.title}\n现在只决定一件事：开始、完成，还是卡住？`;
   if (row.kind === "current_task_conflict") return `当前正在执行：${row.payload.currentTask.title}\n先完成、卡住或推迟当前任务，再开始：${row.payload.requestedTask.title}`;
   if (row.kind === "disambiguation_card") return [
     "找到多个相似任务，请回复完整任务名：",

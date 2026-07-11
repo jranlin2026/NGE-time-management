@@ -93,7 +93,7 @@ export function createReminderEngine({ tasks, ops, analyzer, replan, clock, hand
       });
       ops.enqueueOutbox({
         kind: "no_response_message",
-        payload: { taskId: task.id, title: task.title },
+        payload: { taskId: task.id, title: task.title, mentionOwner: true },
         idempotencyKey: `outbox:${reminder.id}`,
       });
       return;
@@ -115,7 +115,12 @@ export function createReminderEngine({ tasks, ops, analyzer, replan, clock, hand
       });
       ops.enqueueOutbox({
         kind: "intervention_card",
-        payload: { task: updated, minimumAction: minimum.action, minutes: 15 },
+        payload: {
+          task: updated,
+          minimumAction: minimum.action,
+          minutes: 15,
+          coachText: "你这效率也太低了。现在别追求完美，只完成接下来的 15 分钟。",
+        },
         idempotencyKey: `outbox:${reminder.id}`,
       });
       await replan({ task: updated, reason: "no_response_2", now: now.toISOString() });
