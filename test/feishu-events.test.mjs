@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   extractMessageText,
+  selectReplyDestination,
   handleFeishuInbound,
   isDispatchCommand,
   isPlanQuery,
@@ -37,6 +38,17 @@ test("prefers open_id for a reusable personal message destination", () => {
     },
   });
   assert.equal(result.senderId, "ou_1");
+});
+
+test("uses the source group as the reply destination", () => {
+  assert.deepEqual(
+    selectReplyDestination({ chatId: "oc_group", senderId: "ou_owner" }),
+    { receiveId: "oc_group", receiveIdType: "chat_id" },
+  );
+  assert.deepEqual(
+    selectReplyDestination({ chatId: "", senderId: "ou_owner" }),
+    { receiveId: "ou_owner", receiveIdType: "open_id" },
+  );
 });
 
 test("detects dispatch commands", () => {

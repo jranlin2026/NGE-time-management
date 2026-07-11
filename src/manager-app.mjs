@@ -27,6 +27,7 @@ import {
   isDispatchCommand,
   isHelpCommand,
   isPlanQuery,
+  selectReplyDestination,
 } from "./lib/feishu-events.mjs";
 import { zonedDateTimeToUtc } from "./lib/schedule-engine.mjs";
 
@@ -39,7 +40,9 @@ export function createManagerApp(config, deps = {}) {
   const tasks = createTaskRepository(db);
   const ops = createOperationsRepository(db);
   if (!config.feishuReceiveId) {
-    config.feishuReceiveId = ops.getSetting("feishu_receive_id") || "";
+    const destination = ops.getSetting("feishu_receive_destination");
+    config.feishuReceiveId = destination?.receiveId || ops.getSetting("feishu_receive_id") || "";
+    config.feishuReceiveIdType = destination?.receiveIdType || config.feishuReceiveIdType;
   }
   const settings = loadManagerSettings(config, ops);
   const analyzer = deps.analyzer || createCodexAnalyzer(config);
@@ -183,10 +186,12 @@ export async function connectFeishu(config, { manager, tasks, ops }) {
     "im.message.receive_v1": async (data) => {
       const message = extractMessageText(data);
       if (message.kind !== "message" || !message.text) return;
-      if (!config.feishuReceiveId && message.senderId) {
-        config.feishuReceiveId = message.senderId;
-        config.feishuReceiveIdType = "open_id";
-        ops.setSetting("feishu_receive_id", message.senderId);
+      if (!config.feishuReceiveId && (message.chatId || message.senderId)) {
+        const destination = selectReplyDestination(message);
+        config.feishuReceiveId = destination.receiveId;
+        config.feishuReceiveIdType = destination.receiveIdType;
+        ops.setSetting("feishu_receive_id", destination.receiveId);
+        ops.setSetting("feishu_receive_destination", destination);
       }
       const action = normalizeManagerAction(message.text);
       if (action) {

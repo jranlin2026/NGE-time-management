@@ -47,6 +47,11 @@ export function extractMessageText(eventBody = {}) {
   };
 }
 
+export function selectReplyDestination(message = {}) {
+  if (message.chatId) return { receiveId: message.chatId, receiveIdType: "chat_id" };
+  return { receiveId: message.senderId || "", receiveIdType: "open_id" };
+}
+
 export function normalizeInboundText(text = "") {
   return String(text)
     .replace(/<at[^>]*>.*?<\/at>/g, "")
