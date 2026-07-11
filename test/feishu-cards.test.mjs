@@ -18,7 +18,7 @@ const task = {
 
 test("current task card exposes four actions with task id", () => {
   const card = renderCurrentTaskCard({ task, startsAt: "10:00", endsAt: "12:00" });
-  const buttons = card.body.elements.find((element) => element.tag === "action").actions;
+  const buttons = card.body.elements.filter((element) => element.tag === "button");
   assert.deepEqual(
     buttons.map((button) => button.behaviors[0].value.action),
     ["start", "complete", "block", "defer_30"],

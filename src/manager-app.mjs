@@ -186,7 +186,7 @@ export async function connectFeishu(config, { manager, tasks, ops }) {
     "im.message.receive_v1": async (data) => {
       const message = extractMessageText(data);
       if (message.kind !== "message" || !message.text) return;
-      if (!config.feishuReceiveId && (message.chatId || message.senderId)) {
+      if ((!config.feishuReceiveId || (message.chatId && config.feishuReceiveIdType !== "chat_id")) && (message.chatId || message.senderId)) {
         const destination = selectReplyDestination(message);
         config.feishuReceiveId = destination.receiveId;
         config.feishuReceiveIdType = destination.receiveIdType;

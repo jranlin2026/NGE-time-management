@@ -10,10 +10,7 @@ export function renderDailyPlanCard({ date, blocks }) {
     ].join("\n")));
     elements.push({ tag: "hr" });
   });
-  elements.push({
-    tag: "action",
-    actions: [button("确认今日计划", "confirm_plan", "", "primary")],
-  });
+  elements.push(button("确认今日计划", "confirm_plan", "", "primary"));
   return card("今日作战卡", "blue", elements);
 }
 
@@ -25,15 +22,10 @@ export function renderCurrentTaskCard({ task, startsAt, endsAt }) {
       `第一步：${task.nextAction}`,
       `完成标准：${task.doneDefinition}`,
     ].join("\n")),
-    {
-      tag: "action",
-      actions: [
-        button("▶ 开始", "start", task.id, "primary"),
-        button("✓ 完成", "complete", task.id, "primary"),
-        button("! 卡住", "block", task.id, "danger"),
-        button("＋ 推迟 30 分钟", "defer_30", task.id, "default"),
-      ],
-    },
+    button("▶ 开始", "start", task.id, "primary"),
+    button("✓ 完成", "complete", task.id, "primary"),
+    button("! 卡住", "block", task.id, "danger"),
+    button("＋ 推迟 30 分钟", "defer_30", task.id, "default"),
   ]);
 }
 
@@ -44,10 +36,7 @@ export function renderInterventionCard({ task, minimumAction, minutes = 15 }) {
       `现在只做 ${minutes} 分钟：**${minimumAction}**`,
       "不重做计划，不切换项目，完成后直接反馈。",
     ].join("\n")),
-    {
-      tag: "action",
-      actions: [button(`立即开始 ${minutes} 分钟`, "start", task.id, "primary")],
-    },
+    button(`立即开始 ${minutes} 分钟`, "start", task.id, "primary"),
   ]);
 }
 
@@ -63,13 +52,8 @@ export function renderReviewCard(summary) {
       "**明日候选**",
       candidates,
     ].join("\n")),
-    {
-      tag: "action",
-      actions: [
-        button("确认复盘", "confirm_review", "", "primary"),
-        button("补充说明", "add_review_note", "", "default"),
-      ],
-    },
+    button("确认复盘", "confirm_review", "", "primary"),
+    button("补充说明", "add_review_note", "", "default"),
   ]);
 }
 
