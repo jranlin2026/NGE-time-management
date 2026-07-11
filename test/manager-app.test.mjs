@@ -39,5 +39,8 @@ test("starts locally, seeds seven days of fixed reminders, recovers, and stops c
   assert.equal(pending.filter((row) => row.kind === "daily_review").length, 7);
   assert.equal(intervals.length, 2);
   assert.equal(app.state.ops.listOutbox().some((row) => row.kind === "recovery_plan_card"), true);
+  assert.equal(app.state.settings.maxCriticalTasks, 5);
+  assert.deepEqual(app.state.settings.projectMinimums, { "个人IP": 2, "极享OS": 2 });
+  assert.deepEqual(app.state.settings.projectWindows["个人IP"], [["10:00", "12:00"], ["14:00", "16:00"]]);
   await app.stop();
 });

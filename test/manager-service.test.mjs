@@ -84,6 +84,28 @@ test("completes a task and replans future blocks", async () => {
   db.close();
 });
 
+test("completes one checkpoint without completing the parent task", async () => {
+  const { db, tasks, ops, manager } = setup();
+  const task = tasks.create({
+    id: "task-checkpoint",
+    rawInput: "拍摄口播",
+    status: "doing",
+    checkpoints: ["写脚本", "录制素材"],
+  });
+  const result = await manager.handleAction({
+    action: "complete_checkpoint",
+    taskId: task.id,
+    checkpointIndex: 0,
+    idempotencyKey: "card:checkpoint-1",
+  });
+
+  assert.equal(result.task.status, "doing");
+  assert.equal(result.task.checkpoints[0].completed, true);
+  assert.equal(result.task.checkpoints[1].completed, false);
+  assert.equal(ops.listEvents({ taskId: task.id }).some((event) => event.kind === "checkpoint_completed"), true);
+  db.close();
+});
+
 test("does not start a second task while one is doing", async () => {
   const { db, tasks, ops, manager } = setup();
   tasks.create({ id: "current", rawInput: "当前任务", status: "doing" });

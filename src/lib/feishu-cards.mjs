@@ -15,6 +15,7 @@ export function renderDailyPlanCard({ date, blocks }) {
 }
 
 export function renderCurrentTaskCard({ task, startsAt, endsAt }) {
+  const checkpoints = task.checkpoints || [];
   return card("现在只做这一件", "purple", [
     markdown([
       `**${task.title}**`,
@@ -22,6 +23,9 @@ export function renderCurrentTaskCard({ task, startsAt, endsAt }) {
       `第一步：${task.nextAction}`,
       `完成标准：${task.doneDefinition}`,
     ].join("\n")),
+    ...checkpoints.map((checkpoint, index) => checkpoint.completed
+      ? markdown(`✓ ${checkpoint.title}`)
+      : button(`○ ${checkpoint.title}`, "complete_checkpoint", task.id, "default", { checkpointIndex: index })),
     button("▶ 开始", "start", task.id, "primary"),
     button("✓ 完成", "complete", task.id, "primary"),
     button("! 卡住", "block", task.id, "danger"),
@@ -73,7 +77,7 @@ function markdown(content) {
   return { tag: "markdown", content };
 }
 
-function button(content, action, taskId, type) {
+function button(content, action, taskId, type, extraValue = {}) {
   return {
     tag: "button",
     text: { tag: "plain_text", content },
@@ -81,7 +85,7 @@ function button(content, action, taskId, type) {
     behaviors: [
       {
         type: "callback",
-        value: { action, taskId },
+        value: { action, taskId, ...extraValue },
       },
     ],
   };

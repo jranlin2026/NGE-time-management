@@ -40,21 +40,28 @@ CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, due_at);
 CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox(status, next_attempt_at);
 `;
 
+const MIGRATION_2 = `
+ALTER TABLE tasks ADD COLUMN checkpoints_json TEXT NOT NULL DEFAULT '[]';
+`;
+
 export function openDatabase(filePath) {
   if (filePath !== ":memory:") fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const db = new DatabaseSync(filePath);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-  const hasMigrations = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'")
-    .get();
-  const migrated = hasMigrations
-    ? db.prepare("SELECT 1 FROM schema_migrations WHERE version = 1").get()
-    : null;
-  if (!migrated) {
+  const migrations = [MIGRATION_1, MIGRATION_2];
+  for (let index = 0; index < migrations.length; index += 1) {
+    const version = index + 1;
+    const hasMigrations = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'")
+      .get();
+    const migrated = hasMigrations
+      ? db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version)
+      : null;
+    if (migrated) continue;
     withTransaction(db, () => {
-      db.exec(MIGRATION_1);
+      db.exec(migrations[index]);
       db.prepare("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)")
-        .run(1, new Date().toISOString());
+        .run(version, new Date().toISOString());
     });
   }
   return db;

@@ -15,6 +15,7 @@ const ALLOWED_FIELDS = new Map([
   ["blocker", "blocker"],
   ["procrastinationCount", "procrastination_count"],
   ["analysisStatus", "analysis_status"],
+  ["checkpoints", "checkpoints_json"],
 ]);
 
 export function createTaskRepository(db, deps = {}) {
@@ -43,8 +44,8 @@ export function createTaskRepository(db, deps = {}) {
     const taskId = input.id || id();
     db.prepare(`INSERT INTO tasks
       (id,title,project,raw_input,quadrant,importance,urgency,due_at,status,next_action,done_definition,
-       estimate_minutes,blocker,procrastination_count,source_message_id,analysis_status,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+       estimate_minutes,blocker,procrastination_count,source_message_id,analysis_status,created_at,updated_at,checkpoints_json)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       taskId,
       clean(input.title || rawInput).slice(0, 80),
       clean(input.project || "未归类"),
@@ -63,6 +64,7 @@ export function createTaskRepository(db, deps = {}) {
       clean(input.analysisStatus || "pending"),
       input.createdAt || input.created || timestamp,
       timestamp,
+      JSON.stringify(normalizeCheckpoints(input.checkpoints)),
     );
     return findById(taskId);
   }
@@ -113,9 +115,18 @@ export function createTaskRepository(db, deps = {}) {
       const clause = entries.map(([key]) => `${ALLOWED_FIELDS.get(key)} = ?`).join(", ");
       const result = db
         .prepare(`UPDATE tasks SET ${clause}, updated_at = ? WHERE id = ?`)
-        .run(...entries.map(([, value]) => value), now(), taskId);
+        .run(...entries.map(([key, value]) => key === "checkpoints" ? JSON.stringify(normalizeCheckpoints(value)) : value), now(), taskId);
       if (!result.changes) throw new Error(`task not found: ${taskId}`);
       return findById(taskId);
+    },
+    completeCheckpoint(taskId, checkpointIndex) {
+      const task = findById(taskId);
+      if (!task) throw new Error(`task not found: ${taskId}`);
+      const checkpoints = task.checkpoints.map((checkpoint, index) =>
+        index === checkpointIndex ? { ...checkpoint, completed: true } : checkpoint,
+      );
+      if (!checkpoints[checkpointIndex]) throw new Error(`checkpoint not found: ${checkpointIndex}`);
+      return this.update(taskId, { checkpoints });
     },
     async importMarkdown(kbDir) {
       const legacyTasks = await readTasks(kbDir);
@@ -154,9 +165,27 @@ function mapTask(row) {
     procrastinationCount: row.procrastination_count,
     sourceMessageId: row.source_message_id,
     analysisStatus: row.analysis_status,
+    checkpoints: parseCheckpoints(row.checkpoints_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function normalizeCheckpoints(checkpoints) {
+  return (Array.isArray(checkpoints) ? checkpoints : [])
+    .map((checkpoint) => typeof checkpoint === "string"
+      ? { title: clean(checkpoint), completed: false }
+      : { title: clean(checkpoint?.title), completed: Boolean(checkpoint?.completed) })
+    .filter((checkpoint) => checkpoint.title)
+    .slice(0, 8);
+}
+
+function parseCheckpoints(value) {
+  try {
+    return normalizeCheckpoints(JSON.parse(value || "[]"));
+  } catch {
+    return [];
+  }
 }
 
 function clean(value) {

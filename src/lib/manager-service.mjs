@@ -103,6 +103,28 @@ export function createManagerService(deps) {
     }
 
     const task = resolution.task;
+    if (input.action === "complete_checkpoint") {
+      const checkpointIndex = Number(input.checkpointIndex);
+      if (!Number.isInteger(checkpointIndex) || checkpointIndex < 0) {
+        throw new Error("checkpoint index is required");
+      }
+      const updated = transaction(() => {
+        const saved = tasks.completeCheckpoint(task.id, checkpointIndex);
+        ops.appendEvent({
+          taskId: task.id,
+          kind: "checkpoint_completed",
+          payload: { checkpointIndex, title: saved.checkpoints[checkpointIndex].title },
+          idempotencyKey: input.idempotencyKey || null,
+        });
+        ops.enqueueOutbox({
+          kind: "status_message",
+          payload: { text: `已完成关卡：${saved.checkpoints[checkpointIndex].title}\n继续推进：${saved.title}`, taskId: saved.id },
+          idempotencyKey: input.idempotencyKey ? `outbox:${input.idempotencyKey}` : `checkpoint:${task.id}:${checkpointIndex}:${Date.now()}`,
+        });
+        return saved;
+      });
+      return { action: input.action, task: updated };
+    }
     if (input.action === "start") {
       const current = tasks.findDoing();
       if (current && current.id !== task.id) {

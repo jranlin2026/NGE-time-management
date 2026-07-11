@@ -5,7 +5,6 @@ const ACTIVE_STATUSES = new Set(["inbox", "open", "ready", "scheduled", "doing",
 export function buildDailySchedule({ date, now, tasks, settings }) {
   const nowDate = new Date(now);
   const maxCriticalTasks = Number(settings.maxCriticalTasks || 3);
-  const windows = buildWindows(date, settings.windows, settings.timezone || "Asia/Shanghai", nowDate);
   const ranked = tasks
     .filter((task) => ACTIVE_STATUSES.has(task.status || "ready"))
     .map((task) => {
@@ -17,27 +16,21 @@ export function buildDailySchedule({ date, now, tasks, settings }) {
     })
     .filter((item) => item.score > -100)
     .sort(compareRanked);
-  const selected = ranked.slice(0, maxCriticalTasks);
+  const candidates = orderRankedTasks(ranked, settings.projectMinimums || {});
   const blocks = [];
   const unfinished = new Set();
-
-  let windowIndex = 0;
-  for (const item of selected) {
+  const scheduled = [];
+  for (const item of candidates) {
+    if (scheduled.length >= maxCriticalTasks) break;
     let remaining = Math.max(5, Number(item.task.estimateMinutes || 30));
-    while (remaining > 0 && windowIndex < windows.length) {
-      const window = windows[windowIndex];
-      if (window.cursor >= window.end) {
-        windowIndex += 1;
-        continue;
-      }
-      const available = Math.floor((window.end - window.cursor) / 60_000);
-      if (available <= 0) {
-        windowIndex += 1;
-        continue;
-      }
-      const minutes = Math.min(remaining, available);
-      const start = new Date(window.cursor);
-      const end = new Date(window.cursor + minutes * 60_000);
+    const definitions = settings.projectWindows?.[item.task.project] || settings.windows;
+    while (remaining > 0) {
+      const slot = nextAvailableSlot({ date, now: nowDate, definitions, timezone: settings.timezone || "Asia/Shanghai", occupied: blocks });
+      if (!slot) break;
+      const available = Math.floor((slot.end - slot.start) / 60_000);
+      const minutes = Math.min(remaining, available, 120);
+      const start = new Date(slot.start);
+      const end = new Date(slot.start + minutes * 60_000);
       blocks.push({
         taskId: item.task.id,
         startsAt: start.toISOString(),
@@ -46,12 +39,13 @@ export function buildDailySchedule({ date, now, tasks, settings }) {
         reason: renderReason(item),
       });
       remaining -= minutes;
-      window.cursor = end.getTime();
     }
+    const added = blocks.some((block) => block.taskId === item.task.id);
+    if (added) scheduled.push(item);
     if (remaining > 0) unfinished.add(item.task.id);
   }
 
-  const selectedIds = new Set(selected.map((item) => item.task.id));
+  const selectedIds = new Set(scheduled.map((item) => item.task.id));
   const deferred = [
     ...unfinished,
     ...ranked.filter((item) => !selectedIds.has(item.task.id)).map((item) => item.task.id),
@@ -60,8 +54,27 @@ export function buildDailySchedule({ date, now, tasks, settings }) {
     date,
     blocks,
     deferred: [...new Set(deferred)],
-    reasons: Object.fromEntries(selected.map((item) => [item.task.id, renderReason(item)])),
+    reasons: Object.fromEntries(scheduled.map((item) => [item.task.id, renderReason(item)])),
   };
+}
+
+function orderRankedTasks(ranked, projectMinimums) {
+  const selected = [];
+  const selectedIds = new Set();
+  for (const [project, minimum] of Object.entries(projectMinimums)) {
+    for (const item of ranked) {
+      if (item.task.project !== project || selectedIds.has(item.task.id)) continue;
+      selected.push(item);
+      selectedIds.add(item.task.id);
+      if (selected.filter((candidate) => candidate.task.project === project).length >= minimum) break;
+    }
+  }
+  for (const item of ranked) {
+    if (selectedIds.has(item.task.id)) continue;
+    selected.push(item);
+    selectedIds.add(item.task.id);
+  }
+  return selected;
 }
 
 export function replanRemaining({ schedule, now, tasks, settings }) {
@@ -117,6 +130,25 @@ function buildWindows(date, definitions, timezone, now) {
       ...window,
       cursor: Math.max(window.start, now.getTime()),
     }));
+}
+
+function nextAvailableSlot({ date, now, definitions, timezone, occupied }) {
+  const windows = buildWindows(date, definitions, timezone, now)
+    .sort((left, right) => left.start - right.start);
+  const sortedOccupied = occupied
+    .map((block) => ({ start: new Date(block.startsAt).getTime(), end: new Date(block.endsAt).getTime() }))
+    .sort((left, right) => left.start - right.start);
+  for (const window of windows) {
+    let cursor = window.cursor;
+    for (const block of sortedOccupied) {
+      if (block.end <= cursor || block.start >= window.end) continue;
+      if (block.start > cursor) return { start: cursor, end: Math.min(block.start, window.end) };
+      cursor = Math.max(cursor, block.end);
+      if (cursor >= window.end) break;
+    }
+    if (cursor < window.end) return { start: cursor, end: window.end };
+  }
+  return null;
 }
 
 export function zonedDateTimeToUtc(date, time, timezone) {
