@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { deliverFeishuOutbound } from "./lib/feishu-delivery.mjs";
 import { openDatabase, withTransaction } from "./db/database.mjs";
 import { backupDatabase } from "./db/backup.mjs";
 import { createTaskRepository } from "./db/task-repository.mjs";
@@ -19,7 +20,6 @@ import {
 import {
   extractCardAction,
   normalizeManagerAction,
-  sendFeishuMessage,
   syncFeishuTask,
 } from "./lib/feishu-messages.mjs";
 import {
@@ -282,8 +282,9 @@ async function deliverOutbox(config, row, { tasks, ops, settings }) {
     feishuReceiveId: config.feishuReceiveId || ops.getSetting("feishu_receive_id") || "",
   };
   const card = cardForOutbox(row, { tasks, settings });
-  if (card) return sendFeishuMessage(effectiveConfig, { kind: "card", card });
-  return sendFeishuMessage(effectiveConfig, { kind: "text", text: textForOutbox(row) });
+  const text = textForOutbox(row);
+  if (card) return deliverFeishuOutbound(effectiveConfig, { kind: "card", card, text });
+  return deliverFeishuOutbound(effectiveConfig, { kind: "text", text });
 }
 
 function cardForOutbox(row, { tasks, settings }) {
