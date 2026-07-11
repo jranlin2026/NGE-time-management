@@ -210,7 +210,7 @@ export async function connectFeishu(config, { manager, tasks, ops, projectRepo, 
     verificationToken: config.feishuVerificationToken || undefined,
     encryptKey: config.feishuEncryptKey || undefined,
   });
-  const handleCardAction = createCardActionHandler({ manager, projectRepo, weeklyPlanning, ops });
+  const handleCardAction = createCardActionHandler({ config, manager, projectRepo, weeklyPlanning, ops });
   const handleMessage = createMessageHandler({ config, manager, ops, weeklyPlanning });
   dispatcher.register({
     "im.message.receive_v1": async (data) => {
@@ -258,7 +258,7 @@ export async function connectFeishu(config, { manager, tasks, ops, projectRepo, 
 export function createMessageHandler({ config, manager, ops, weeklyPlanning }) {
   return async function handleMessage(message) {
     if (message.kind !== "message") return;
-    if ((message.evidence?.length || message.isEvidenceSubmission) && config.managerUserId && message.senderId && message.senderId !== config.managerUserId) {
+    if (message.isEvidenceSubmission && config.managerUserId && message.senderId && message.senderId !== config.managerUserId) {
       return { ignored: true, reason: "different_user" };
     }
     if ((!config.feishuReceiveId || (message.chatId && config.feishuReceiveIdType !== "chat_id")) && (message.chatId || message.senderId)) {
@@ -268,7 +268,7 @@ export function createMessageHandler({ config, manager, ops, weeklyPlanning }) {
       ops.setSetting("feishu_receive_id", destination.receiveId);
       ops.setSetting("feishu_receive_destination", destination);
     }
-    if (message.evidence?.length || message.isEvidenceSubmission) {
+    if (message.isEvidenceSubmission) {
       const pending = manager.listPendingAcceptance?.() || [];
       if (pending.length === 1) return manager.submitEvidence({ taskId: pending[0].id, evidence: message.evidence, senderId: message.senderId, chatId: message.chatId, messageId: message.messageId, idempotencyKey: `message:${message.messageId}` });
       return { ignored: true, reason: pending.length ? "ambiguous_acceptance" : "no_pending_acceptance" };
@@ -297,9 +297,12 @@ export function createMessageHandler({ config, manager, ops, weeklyPlanning }) {
   };
 }
 
-export function createCardActionHandler({ manager, projectRepo, weeklyPlanning, ops }) {
+export function createCardActionHandler({ config = {}, manager, projectRepo, weeklyPlanning, ops }) {
   return async function handleCardAction(action) {
     if (["accept_evidence", "reject_evidence"].includes(action.action)) {
+      if (config.managerUserId && action.actorId !== config.managerUserId) {
+        return { toast: { type: "error", content: "无权执行验收操作" }, ignored: true, reason: "different_user" };
+      }
       const result = await manager.decideAcceptance({ taskId: action.taskId, accepted: action.action === "accept_evidence", idempotencyKey: action.idempotencyKey });
       return { toast: { type: "success", content: result.status === "accepted" ? "验收通过" : "已退回继续完成" } };
     }

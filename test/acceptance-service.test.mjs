@@ -89,7 +89,7 @@ test("rejects late evidence before writing a durable submission event", async ()
   fixture.db.close();
 });
 
-for (const stage of ["after_acceptance_write", "after_task_write", "after_event_write"]) {
+for (const stage of ["after_acceptance_write", "after_task_write", "after_transition_event_write", "after_event_write"]) {
   test(`rolls back ${stage} and converges on retry`, async () => {
     let shouldFail = true;
     const fixture = setup(async () => ({ status: "accepted", explanation: "证据相关且可读" }), (point) => {
@@ -111,6 +111,18 @@ for (const stage of ["after_acceptance_write", "after_task_write", "after_event_
     fixture.db.close();
   });
 }
+
+test("records exactly one transition audit and one submission event across retries", async () => {
+  const fixture = setup(async () => ({ status: "accepted", explanation: "证据相关且可读" }));
+  pending(fixture, { id: "audited", title: "发布视频" });
+  const input = { taskId: "audited", evidence: [{ type: "url", value: "https://example.com/video" }], idempotencyKey: "submit:audited" };
+  await fixture.service.submit(input);
+  await fixture.service.submit(input);
+  assert.equal(fixture.ops.listEvents({ taskId: "audited", kind: "task_accepted" }).length, 1);
+  assert.equal(fixture.ops.listEvents({ taskId: "audited", kind: "acceptance_evidence_submitted" }).length, 1);
+  assert.equal(fixture.ops.findEventByIdempotencyKey("submit:audited:transition").kind, "task_accepted");
+  fixture.db.close();
+});
 
 test("rolls back a manual-review outbox failure and retries once", async () => {
   let shouldFail = true;

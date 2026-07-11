@@ -180,6 +180,33 @@ test("ignores unauthorized evidence before acceptance routing", async () => {
       ingest: async () => assert.fail("unauthorized evidence must not enter task ingestion"),
     },
   });
-  const result = await handler({ kind: "message", text: "", evidence: [{ type: "feishu_image", value: "img" }], senderId: "intruder", messageId: "msg-2" });
+  const result = await handler({ kind: "message", text: "", isEvidenceSubmission: true, evidence: [{ type: "feishu_image", value: "img" }], senderId: "intruder", messageId: "msg-2" });
   assert.deepEqual(result, { ignored: true, reason: "different_user" });
+});
+
+test("does not route an unrelated ordinary URL message to pending acceptance", async () => {
+  let ingested = false;
+  const handler = createMessageHandler({
+    config: { managerUserId: "owner", feishuReceiveId: "owner" }, ops: { setSetting() {} }, weeklyPlanning: {},
+    manager: {
+      listPendingAcceptance: () => [{ id: "task-1" }],
+      submitEvidence: async () => assert.fail("ordinary URL must not be acceptance evidence"),
+      ingest: async () => { ingested = true; },
+    },
+  });
+  await handler({ kind: "message", text: "参考这个链接 https://example.com/article", evidence: [{ type: "url", value: "https://example.com/article" }], isEvidenceSubmission: false, senderId: "owner", messageId: "url-1" });
+  assert.equal(ingested, true);
+});
+
+test("authorizes evidence acceptance callbacks by card operator", async () => {
+  let decisions = 0;
+  const callback = createCardActionHandler({
+    config: { managerUserId: "owner" },
+    manager: { decideAcceptance: async () => { decisions += 1; return { status: "accepted" }; } },
+  });
+  const denied = await callback({ action: "accept_evidence", taskId: "task-1", actorId: "intruder", idempotencyKey: "card:denied" });
+  const allowed = await callback({ action: "accept_evidence", taskId: "task-1", actorId: "owner", idempotencyKey: "card:allowed" });
+  assert.equal(denied.ignored, true);
+  assert.equal(allowed.toast.content, "验收通过");
+  assert.equal(decisions, 1);
 });

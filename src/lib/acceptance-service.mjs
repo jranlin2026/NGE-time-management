@@ -45,13 +45,20 @@ export function createAcceptanceService(deps) {
         const transition = transitionTask({ task, action, detail: decision.explanation || "", at: now() });
         savedTask = tasks.update(task.id, transition.patch);
         fail("after_task_write");
+        ops.appendEvent({
+          taskId,
+          kind: transition.event.kind,
+          payload: transition.event.payload,
+          idempotencyKey: transitionEventKey(idempotencyKey, acceptance.id, decision.status),
+        });
+        fail("after_transition_event_write");
       } else {
         ops.enqueueOutbox({ kind: "acceptance_review_card", payload: { task, evidence, decision }, idempotencyKey: `acceptance-review:${acceptance.id}` });
         fail("after_outbox_write");
       }
 
       const result = { ...decision, acceptance: stored, task: savedTask };
-      ops.appendEvent({ taskId, kind: "acceptance_evidence_submitted", payload: { evidence, decision, acceptanceId: stored.id }, idempotencyKey: idempotencyKey || null });
+      ops.appendEvent({ taskId, kind: "acceptance_evidence_submitted", payload: { evidence, decision, acceptanceId: stored.id }, idempotencyKey: submissionEventKey(idempotencyKey, acceptance.id, decision.status) });
       fail("after_event_write");
       return result;
     });
@@ -69,7 +76,8 @@ export function createAcceptanceService(deps) {
       const transition = transitionTask({ task, action: accepted ? "accept" : "reject", detail: explanation, at: now() });
       const savedTask = tasks.update(task.id, transition.patch);
       const decision = { status, explanation, source: "user" };
-      ops.appendEvent({ taskId, kind: "acceptance_evidence_submitted", payload: { decision, acceptanceId: stored.id }, idempotencyKey: idempotencyKey || null });
+      ops.appendEvent({ taskId, kind: transition.event.kind, payload: transition.event.payload, idempotencyKey: transitionEventKey(idempotencyKey, acceptance.id, status) });
+      ops.appendEvent({ taskId, kind: "acceptance_evidence_submitted", payload: { decision, acceptanceId: stored.id }, idempotencyKey: submissionEventKey(idempotencyKey, acceptance.id, status) });
       return { ...decision, acceptance: stored, task: savedTask };
     });
   }
@@ -102,6 +110,14 @@ export function createAcceptanceService(deps) {
   }
 
   return { request, submit, decideByUser };
+}
+
+function submissionEventKey(inputKey, acceptanceId, status) {
+  return inputKey || `acceptance:${acceptanceId}:submission:${status}`;
+}
+
+function transitionEventKey(inputKey, acceptanceId, status) {
+  return inputKey ? `${inputKey}:transition` : `acceptance:${acceptanceId}:transition:${status}`;
 }
 
 function validateEvidence(task, evidence) {

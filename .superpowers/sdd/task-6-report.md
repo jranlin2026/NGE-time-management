@@ -27,6 +27,7 @@ Complete.
 - Targeted and adjacent suite: 58 passed, 0 failed.
 - Full suite: 147 passed, 0 failed.
 - `git diff --check`: passed.
+
 - Runtime: Node v24.14.0 from the bundled Codex runtime (Node was not on the shell's default PATH).
 
 ## Self-review
@@ -55,4 +56,20 @@ Complete.
 - Review Task 6 target suite: 43 passed, 0 failed.
 - Expanded target plus manager-app routing suite: 52 passed, 0 failed.
 - Review full suite: 156 passed, 0 failed.
+- `git diff --check`: passed.
+
+## Final review fixes
+
+- Feishu card action parsing now retains the callback operator `open_id`, including direct and nested operator shapes. Manual accept/reject is denied before mutation unless the actor matches the configured manager user.
+- Only explicit result messages and image/file message kinds enter acceptance routing. An ordinary message that happens to contain a URL continues through normal task/chat handling.
+- Accepted or rejected evidence now atomically appends both the state-machine audit event (`task_accepted`/`task_rejected`) and `acceptance_evidence_submitted`, with distinct stable idempotency keys.
+- Retry tests assert exactly one event of each kind. Failure after the transition audit write rolls back the acceptance, task, and both events before retry.
+
+### Final RED/GREEN evidence
+
+- RED: card callbacks lacked actor identity, ordinary URL messages could be captured by a pending acceptance, and acceptance transitions lacked their state-machine audit event.
+- GREEN: realistic Feishu operator-shape tests, unauthorized callback tests, unrelated URL routing regression, and dual-event rollback/idempotency tests all pass.
+- Task 6 target suite: 45 passed, 0 failed.
+- Expanded acceptance/routing/card suite: 66 passed, 0 failed.
+- Full suite: 161 passed, 0 failed.
 - `git diff --check`: passed.

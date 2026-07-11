@@ -32,6 +32,7 @@ export function extractMessageText(eventBody = {}) {
     return {
       kind: "message",
       text: "",
+      isEvidenceSubmission: true,
       evidence: [{
         type: messageType === "image" ? "feishu_image" : "file_reference",
         value: messageType === "image" ? (content.image_key || "") : (content.file_key || content.file_name || ""),

@@ -14,8 +14,9 @@ export function extractCardAction(input = {}) {
   const action = event.action || input.action || {};
   const value = action.value || action.form_value || {};
   const eventId = input.header?.event_id || input.event_id || event.event_id || input.token || "";
+  const actorId = event.operator?.open_id || event.operator?.operator_id?.open_id || event.operator_id?.open_id || input.operator?.open_id || "";
   if (!value.action) return null;
-  return { value, eventId };
+  return { value, eventId, ...(actorId ? { actorId } : {}) };
 }
 
 export function normalizeManagerAction(input) {
@@ -50,6 +51,7 @@ export function normalizeManagerAction(input) {
     query: value.query || "",
     detail: value.detail || "",
     idempotencyKey: input.eventId ? `card:${input.eventId}` : "",
+    ...(input.actorId ? { actorId: input.actorId } : {}),
   };
 }
 

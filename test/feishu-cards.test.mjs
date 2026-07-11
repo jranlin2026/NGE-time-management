@@ -101,6 +101,18 @@ test("extracts a Feishu card event id and value", () => {
   });
 });
 
+test("retains realistic Feishu card operator identities", () => {
+  const direct = extractCardAction({
+    header: { event_id: "evt-direct" },
+    event: { operator: { open_id: "ou_owner" }, action: { value: { action: "accept_evidence", taskId: "task-1" } } },
+  });
+  assert.equal(normalizeManagerAction(direct).actorId, "ou_owner");
+  const nested = extractCardAction({
+    event: { event_id: "evt-nested", operator: { operator_id: { open_id: "ou_nested" } }, action: { value: { action: "reject_evidence", taskId: "task-1" } } },
+  });
+  assert.equal(normalizeManagerAction(nested).actorId, "ou_nested");
+});
+
 function allActions(card) {
   const actions = [];
   const visit = (value) => {
