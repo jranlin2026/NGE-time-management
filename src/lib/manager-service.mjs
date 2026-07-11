@@ -19,7 +19,7 @@ export function createManagerService(deps) {
     : { materialize: async () => [] });
   const nowDate = () => deps.clock?.now?.() || new Date();
   const acceptanceStore = deps.projectOps || (deps.db ? createProjectOperationsRepository(deps.db) : null);
-  const acceptance = deps.acceptance || createAcceptanceService({ tasks, ops, analyzer, acceptances: acceptanceStore, transaction, clock: deps.clock });
+  const acceptance = deps.acceptance || createAcceptanceService({ tasks, ops, analyzer, acceptances: acceptanceStore, projectRepo: deps.projectRepo, transaction, clock: deps.clock });
 
   async function ingest({ messageId, text, chatId = "", senderId = "" }) {
     if (settings.managerUserId && senderId && senderId !== settings.managerUserId) {

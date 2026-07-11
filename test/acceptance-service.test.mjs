@@ -117,7 +117,8 @@ test("records exactly one transition audit and one submission event across retri
   pending(fixture, { id: "audited", title: "发布视频" });
   const input = { taskId: "audited", evidence: [{ type: "url", value: "https://example.com/video" }], idempotencyKey: "submit:audited" };
   await fixture.service.submit(input);
-  await fixture.service.submit(input);
+  const duplicate = await fixture.service.submit(input);
+  assert.equal(duplicate.acceptanceId, duplicate.acceptance.id);
   assert.equal(fixture.ops.listEvents({ taskId: "audited", kind: "task_accepted" }).length, 1);
   assert.equal(fixture.ops.listEvents({ taskId: "audited", kind: "acceptance_evidence_submitted" }).length, 1);
   assert.equal(fixture.ops.findEventByIdempotencyKey("submit:audited:transition").kind, "task_accepted");

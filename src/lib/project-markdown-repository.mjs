@@ -100,7 +100,7 @@ function parseProject(rawContent, filePath) {
       fail(`deliverable weights for milestone ${milestone.id} must total 100`);
     }
   }
-  return {
+  const parsed = {
     id: frontmatter.values.project_id,
     name: frontmatter.values.name,
     status: frontmatter.values.status,
@@ -115,6 +115,8 @@ function parseProject(rawContent, filePath) {
     rawContent,
     filePath,
   };
+  parsed.progress = computeProjectProgress(parsed);
+  return parsed;
 }
 
 export function computeProjectProgress(project) {

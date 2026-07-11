@@ -26,6 +26,7 @@ import {
   renderWeeklyPlanCard,
   renderEvidenceRequestCard,
   renderAcceptanceReviewCard,
+  renderProjectProgressCard,
 } from "./lib/feishu-cards.mjs";
 import {
   extractCardAction,
@@ -141,6 +142,7 @@ export function createManagerApp(config, deps = {}) {
     tasks,
     ops,
     projectOps,
+    projectRepo,
     analyzer,
     reminderEngine,
     clock,
@@ -401,6 +403,7 @@ function cardForOutbox(row, { tasks, settings }) {
   if (row.kind === "project_setup_card") return renderProjectSetupCard(row.payload);
   if (row.kind === "evidence_request_card") return renderEvidenceRequestCard(row.payload);
   if (row.kind === "acceptance_review_card") return renderAcceptanceReviewCard(row.payload);
+  if (row.kind === "project_progress_card") return renderProjectProgressCard(row.payload);
   if (row.kind === "current_task_card") {
     return renderCurrentTaskCard({ task: row.payload.task, startsAt: "按计划", endsAt: "完成为止" });
   }

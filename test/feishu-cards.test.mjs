@@ -5,6 +5,7 @@ import {
   renderDailyPlanCard,
   renderInterventionCard,
   renderProjectSetupCard,
+  renderProjectProgressCard,
   renderReviewCard,
   renderWeeklyPlanCard,
 } from "../src/lib/feishu-cards.mjs";
@@ -72,6 +73,21 @@ test("renders plan, intervention, and review cards with factual content", () => 
   assert.match(JSON.stringify(plan), /最低容量无法在容量上限内排入/);
   assert.match(JSON.stringify(intervention), /打开相机说完第一遍/);
   assert.match(JSON.stringify(review), /67%/);
+});
+
+test("project progress card shows deliverable, evidence, progress delta, and next candidate", () => {
+  const card = renderProjectProgressCard({
+    deliverable: { id: "video-01", name: "发布第 1 条短视频" },
+    evidence: [{ type: "url", value: "https://example.com/video" }],
+    beforeProgress: 0,
+    afterProgress: 10,
+    nextCandidate: "- 发布第 2 条短视频。",
+  });
+  const rendered = JSON.stringify(card);
+  assert.match(rendered, /发布第 1 条短视频/);
+  assert.match(rendered, /https:\/\/example\.com\/video/);
+  assert.match(rendered, /0%.*10%/);
+  assert.match(rendered, /发布第 2 条短视频/);
 });
 
 test("normalizes card buttons and text commands into the same actions", () => {

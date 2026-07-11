@@ -1,7 +1,7 @@
 import { transitionTask } from "./task-state-machine.mjs";
 
 export function createAcceptanceService(deps) {
-  const { tasks, ops, analyzer, acceptances } = deps;
+  const { tasks, ops, analyzer, acceptances, projectRepo } = deps;
   const transaction = deps.transaction || ((fn) => fn());
   const fail = deps.failureInjector || (() => {});
   const now = () => deps.clock?.now?.().toISOString?.() || new Date().toISOString();
@@ -28,7 +28,28 @@ export function createAcceptanceService(deps) {
     const validation = validateEvidence(taskForAnalysis, evidence);
     const decision = validation || await safeAnalyze({ task: taskForAnalysis, evidence });
 
-    return transaction(() => {
+    let projectWrite = null;
+    if (decision.status === "accepted" && projectRepo && taskForAnalysis.projectId) {
+      const acceptanceId = requirePending(taskId).acceptance.id;
+      const project = await projectRepo.readProject(taskForAnalysis.projectId);
+      const deliverable = findDeliverable(project, taskForAnalysis.deliverableId);
+      if (deliverable?.status === "accepted") {
+        const progress = projectProgress(project);
+        const reconciliation = ops.findEventByIdempotencyKey(`project-sync-reconcile:${acceptanceId}`)?.payload;
+        projectWrite = { ...project, beforeProgress: reconciliation?.beforeProgress ?? progress, projectProgress: reconciliation?.afterProgress ?? progress, reconciled: true };
+      } else {
+        projectWrite = await projectRepo.acceptDeliverable({
+          projectId: taskForAnalysis.projectId,
+          deliverableId: taskForAnalysis.deliverableId,
+          evidence: summarizeEvidence(evidence),
+          expectedHash: project.contentHash,
+          operationKey: `acceptance-${acceptanceId}`,
+        });
+      }
+    }
+
+    try {
+      return transaction(() => {
       const repeated = existingSubmission(taskId, idempotencyKey);
       if (repeated) return repeated;
       const { task, acceptance } = requirePending(taskId);
@@ -40,6 +61,7 @@ export function createAcceptanceService(deps) {
       fail("after_acceptance_write");
 
       let savedTask = task;
+      let resultDecision = decision;
       if (decision.status === "accepted" || decision.status === "rejected") {
         const action = decision.status === "accepted" ? "accept" : "reject";
         const transition = transitionTask({ task, action, detail: decision.explanation || "", at: now() });
@@ -52,34 +74,119 @@ export function createAcceptanceService(deps) {
           idempotencyKey: transitionEventKey(idempotencyKey, acceptance.id, decision.status),
         });
         fail("after_transition_event_write");
+        if (decision.status === "rejected") {
+          const reworkTaskId = `rework:${acceptance.id}`;
+          tasks.create({
+            id: reworkTaskId,
+            projectId: task.projectId,
+            milestoneId: task.milestoneId,
+            deliverableId: task.deliverableId,
+            requiresEvidence: true,
+            title: `返工：${task.title}`,
+            nextAction: decision.explanation || "根据验收意见继续完善",
+            doneDefinition: task.doneDefinition,
+            project: task.project,
+            status: "ready",
+          });
+          resultDecision = { ...decision, reworkTaskId };
+        }
+        if (decision.status === "accepted" && projectWrite) {
+          acceptances.saveSyncState({
+            projectId: task.projectId,
+            filePath: projectWrite.filePath,
+            contentHash: projectWrite.contentHash,
+            lastWrittenVersion: projectWrite.projectProgress,
+            lastError: null,
+          });
+          ops.enqueueOutbox({
+            kind: "project_progress_card",
+            payload: progressPayload(task, projectWrite, evidence),
+            idempotencyKey: `project-progress:${acceptance.id}`,
+          });
+        }
       } else {
         ops.enqueueOutbox({ kind: "acceptance_review_card", payload: { task, evidence, decision }, idempotencyKey: `acceptance-review:${acceptance.id}` });
         fail("after_outbox_write");
       }
 
-      const result = { ...decision, acceptance: stored, task: savedTask };
-      ops.appendEvent({ taskId, kind: "acceptance_evidence_submitted", payload: { evidence, decision, acceptanceId: stored.id }, idempotencyKey: submissionEventKey(idempotencyKey, acceptance.id, decision.status) });
+      const result = { ...resultDecision, acceptance: stored, task: savedTask };
+      ops.appendEvent({ taskId, kind: "acceptance_evidence_submitted", payload: { evidence, decision: resultDecision, acceptanceId: stored.id }, idempotencyKey: submissionEventKey(idempotencyKey, acceptance.id, decision.status) });
       fail("after_event_write");
-      return result;
-    });
+      return { ...result, acceptanceId: stored.id };
+      });
+    } catch (error) {
+      if (projectWrite) {
+        ops.appendEvent({
+          taskId,
+          kind: "project_sync_reconciliation_required",
+          payload: { projectId: taskForAnalysis.projectId, acceptanceId: requirePending(taskId).acceptance.id, contentHash: projectWrite.contentHash, beforeProgress: projectWrite.beforeProgress, afterProgress: projectWrite.projectProgress },
+          idempotencyKey: `project-sync-reconcile:${requirePending(taskId).acceptance.id}`,
+        });
+      }
+      throw error;
+    }
   }
 
-  async function decideByUser({ taskId, accepted, explanation = "", idempotencyKey = "" }) {
+  async function decideByUser({ taskId, acceptanceId, accepted, decision, explanation = "", idempotencyKey = "" }) {
+    const selectedAcceptance = acceptanceId ? acceptances.getAcceptance(acceptanceId) : null;
+    taskId = taskId || selectedAcceptance?.taskId;
+    const isAccepted = decision ? decision === "accepted" : Boolean(accepted);
     const prior = existingSubmission(taskId, idempotencyKey);
     if (prior) return prior;
-    return transaction(() => {
+    const pendingState = requirePending(taskId);
+    if (acceptanceId && pendingState.acceptance.id !== acceptanceId) throw new Error(`acceptance is not pending: ${acceptanceId}`);
+    let projectWrite = null;
+    if (isAccepted && projectRepo && pendingState.task.projectId) {
+      const project = await projectRepo.readProject(pendingState.task.projectId);
+      const deliverable = findDeliverable(project, pendingState.task.deliverableId);
+      if (deliverable?.status === "accepted") {
+        const progress = projectProgress(project);
+        const reconciliation = ops.findEventByIdempotencyKey(`project-sync-reconcile:${pendingState.acceptance.id}`)?.payload;
+        projectWrite = { ...project, beforeProgress: reconciliation?.beforeProgress ?? progress, projectProgress: reconciliation?.afterProgress ?? progress, reconciled: true };
+      } else {
+        projectWrite = await projectRepo.acceptDeliverable({
+          projectId: pendingState.task.projectId,
+          deliverableId: pendingState.task.deliverableId,
+          evidence: summarizeEvidence(pendingState.acceptance.evidence),
+          expectedHash: project.contentHash,
+          operationKey: `acceptance-${pendingState.acceptance.id}`,
+        });
+      }
+    }
+    try {
+      return transaction(() => {
       const repeated = existingSubmission(taskId, idempotencyKey);
       if (repeated) return repeated;
       const { task, acceptance } = requirePending(taskId);
-      const status = accepted ? "accepted" : "rejected";
+      const status = isAccepted ? "accepted" : "rejected";
       const stored = acceptances.decideAcceptance({ acceptanceId: acceptance.id, status, explanation });
-      const transition = transitionTask({ task, action: accepted ? "accept" : "reject", detail: explanation, at: now() });
+      const transition = transitionTask({ task, action: isAccepted ? "accept" : "reject", detail: explanation, at: now() });
       const savedTask = tasks.update(task.id, transition.patch);
-      const decision = { status, explanation, source: "user" };
+      let storedDecision = { status, explanation, source: "user" };
+      if (!isAccepted) {
+        const reworkTaskId = `rework:${acceptance.id}`;
+        tasks.create({
+          id: reworkTaskId, projectId: task.projectId, milestoneId: task.milestoneId,
+          deliverableId: task.deliverableId, requiresEvidence: true,
+          title: `返工：${task.title}`, nextAction: explanation || "根据验收意见继续完善",
+          doneDefinition: task.doneDefinition, project: task.project, status: "ready",
+        });
+        storedDecision = { ...storedDecision, reworkTaskId };
+      }
       ops.appendEvent({ taskId, kind: transition.event.kind, payload: transition.event.payload, idempotencyKey: transitionEventKey(idempotencyKey, acceptance.id, status) });
-      ops.appendEvent({ taskId, kind: "acceptance_evidence_submitted", payload: { decision, acceptanceId: stored.id }, idempotencyKey: submissionEventKey(idempotencyKey, acceptance.id, status) });
-      return { ...decision, acceptance: stored, task: savedTask };
-    });
+      if (isAccepted && projectWrite) {
+        acceptances.saveSyncState({ projectId: task.projectId, filePath: projectWrite.filePath, contentHash: projectWrite.contentHash, lastWrittenVersion: projectWrite.projectProgress, lastError: null });
+        ops.enqueueOutbox({ kind: "project_progress_card", payload: progressPayload(task, projectWrite, acceptance.evidence), idempotencyKey: `project-progress:${acceptance.id}` });
+      }
+      ops.appendEvent({ taskId, kind: "acceptance_evidence_submitted", payload: { decision: storedDecision, acceptanceId: stored.id }, idempotencyKey: submissionEventKey(idempotencyKey, acceptance.id, status) });
+      return { ...storedDecision, acceptance: stored, acceptanceId: stored.id, task: savedTask };
+      });
+    } catch (error) {
+      if (projectWrite) {
+        ops.appendEvent({ taskId, kind: "project_sync_reconciliation_required", payload: { projectId: pendingState.task.projectId, acceptanceId: pendingState.acceptance.id, contentHash: projectWrite.contentHash, beforeProgress: projectWrite.beforeProgress, afterProgress: projectWrite.projectProgress }, idempotencyKey: `project-sync-reconcile:${pendingState.acceptance.id}` });
+      }
+      throw error;
+    }
   }
 
   function requirePending(taskId) {
@@ -96,7 +203,7 @@ export function createAcceptanceService(deps) {
     const event = ops.findEventByIdempotencyKey(key);
     if (!event) return null;
     const acceptance = event.payload?.acceptanceId ? acceptances?.getAcceptance(event.payload.acceptanceId) : null;
-    return { ...(event.payload?.decision || {}), acceptance, task: tasks.findById(taskId), duplicate: true };
+    return { ...(event.payload?.decision || {}), acceptance, acceptanceId: acceptance?.id, task: tasks.findById(taskId), duplicate: true };
   }
 
   async function safeAnalyze(input) {
@@ -110,6 +217,36 @@ export function createAcceptanceService(deps) {
   }
 
   return { request, submit, decideByUser };
+}
+
+function findDeliverable(project, deliverableId) {
+  return project.milestones?.flatMap((item) => item.deliverables || []).find((item) => item.id === deliverableId);
+}
+
+function projectProgress(project) {
+  return Math.round((project.milestones || []).reduce((total, milestone) => {
+    const accepted = (milestone.deliverables || []).filter((item) => item.status === "accepted")
+      .reduce((sum, item) => sum + Number(item.weight || 0), 0);
+    return total + accepted * Number(milestone.weight || 0) / 100;
+  }, 0) * 100) / 100;
+}
+
+function summarizeEvidence(evidence) {
+  return evidence.map((item) => item.value).filter(Boolean).join("｜");
+}
+
+function progressPayload(task, write, evidence) {
+  const project = write;
+  const deliverable = findDeliverable(project, task.deliverableId);
+  return {
+    taskId: task.id,
+    projectId: task.projectId,
+    deliverable: { id: task.deliverableId, name: deliverable?.name || task.title },
+    evidence,
+    beforeProgress: write.beforeProgress,
+    afterProgress: write.projectProgress,
+    nextCandidate: String(project.nextCandidates || "").split(/\r?\n/).find((line) => line.trim()) || "待确认",
+  };
 }
 
 function submissionEventKey(inputKey, acceptanceId, status) {

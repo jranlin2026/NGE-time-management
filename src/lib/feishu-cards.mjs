@@ -123,6 +123,17 @@ export function renderAcceptanceReviewCard({ task, evidence = [], decision = {} 
   ]);
 }
 
+export function renderProjectProgressCard({ deliverable = {}, evidence = [], beforeProgress = 0, afterProgress = 0, nextCandidate = "待确认" }) {
+  return card("项目进度已更新", "green", [
+    markdown([
+      `**已验收：${deliverable.name || deliverable.id || "交付项"}**`,
+      `证据：${evidence.map((item) => item.value).filter(Boolean).join("｜") || "已人工确认"}`,
+      `项目进度：${beforeProgress}% → ${afterProgress}%`,
+      `下一候选：${String(nextCandidate).replace(/^[-*]\s*/, "")}`,
+    ].join("\n")),
+  ]);
+}
+
 function card(title, template, elements) {
   return {
     schema: "2.0",
