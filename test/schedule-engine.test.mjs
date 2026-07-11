@@ -172,6 +172,58 @@ test("does not schedule personal IP outside its protected window", () => {
   }), true);
 });
 
+test("caps scheduled work at seventy percent of usable windows", () => {
+  const schedule = buildDailySchedule({
+    date: "2026-07-13",
+    now: "2026-07-13T00:00:00.000Z",
+    settings: {
+      timezone: "Asia/Shanghai",
+      windows: [["10:00", "12:00"], ["14:00", "18:00"], ["20:00", "22:00"]],
+      capacityRatio: 0.7,
+      maxCriticalTasks: 5,
+    },
+    tasks: Array.from({ length: 5 }, (_, index) => task(`long-${index}`, "极享OS", 240)),
+  });
+  const minutes = schedule.blocks.reduce((sum, block) =>
+    sum + (new Date(block.endsAt) - new Date(block.startsAt)) / 60_000, 0);
+  assert.equal(minutes, 336);
+  assert.ok(minutes <= 480 * 0.7);
+});
+
+test("only a system-unusable Jixiang OS bug overrides normal ranking", () => {
+  const base = {
+    date: "2026-07-13",
+    now: "2026-07-13T00:00:00.000Z",
+    settings: {
+      timezone: "Asia/Shanghai", windows: [["10:00", "12:00"]], maxCriticalTasks: 1,
+      capacityRatio: 0.7, projectBoosts: [{ project: "个人IP", points: 100 }],
+    },
+  };
+  const ipTask = task("ip", "个人IP", 60);
+  const normalOs = task("normal-os", "极享OS", 60);
+  const unusableOs = { ...task("unusable-os", "极享OS", 60), impact: "system_unusable_bug" };
+
+  assert.equal(buildDailySchedule({ ...base, tasks: [ipTask, normalOs] }).blocks[0].taskId, ipTask.id);
+  assert.equal(buildDailySchedule({ ...base, tasks: [ipTask, unusableOs] }).blocks[0].taskId, unusableOs.id);
+});
+
+test("warns when project minimum work cannot fit without exceeding capacity", () => {
+  const schedule = buildDailySchedule({
+    date: "2026-07-13",
+    now: "2026-07-13T00:00:00.000Z",
+    settings: {
+      timezone: "Asia/Shanghai", windows: [["10:00", "11:00"]], capacityRatio: 0.7,
+      maxCriticalTasks: 5, projectMinimums: { "个人IP": 2 }, projectMinimumMinutes: 60,
+    },
+    tasks: [task("ip-1", "个人IP", 60), task("ip-2", "个人IP", 60)],
+  });
+  const minutes = schedule.blocks.reduce((sum, block) =>
+    sum + (new Date(block.endsAt) - new Date(block.startsAt)) / 60_000, 0);
+  assert.equal(minutes, 42);
+  assert.equal(schedule.capacityWarnings.length, 1);
+  assert.match(schedule.capacityWarnings[0], /个人IP/);
+});
+
 function task(id, project, estimateMinutes) {
   return {
     id,

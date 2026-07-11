@@ -1,5 +1,8 @@
-export function renderDailyPlanCard({ date, blocks }) {
+export function renderDailyPlanCard({ date, blocks, capacityWarnings = [] }) {
   const elements = [markdown(`**${date} 今日只锁定 ${new Set(blocks.map((block) => block.id || block.taskId)).size} 件事**`)];
+  if (capacityWarnings.length) {
+    elements.push(markdown(`**容量提醒**\n${capacityWarnings.map((warning) => `- ${warning}`).join("\n")}`));
+  }
   blocks.forEach((block, index) => {
     elements.push(markdown([
       `**${index + 1}. ${block.title}**`,

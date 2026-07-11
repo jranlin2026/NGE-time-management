@@ -138,6 +138,7 @@ export function createManagerApp(config, deps = {}) {
     transaction: (fn) => withTransaction(db, fn),
     tasks,
     ops,
+    projectOps,
     analyzer,
     reminderEngine,
     clock,
@@ -450,6 +451,8 @@ function loadManagerSettings(config, ops) {
       [config.schedule.afternoon, config.schedule.eveningEnd],
     ],
     maxCriticalTasks: 5,
+    capacityRatio: 0.7,
+    projectMinimumMinutes: 60,
     noResponseMinutes: config.schedule.noResponseMinutes || 15,
     projectMinimums: { "个人IP": 2, "极享OS": 2 },
     projectWindows: {

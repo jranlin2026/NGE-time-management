@@ -1,6 +1,7 @@
-import { buildDailySchedule } from "./schedule-engine.mjs";
+import { buildDailySchedule, replanRemaining } from "./schedule-engine.mjs";
 import { transitionTask } from "./task-state-machine.mjs";
 import { renderDailyPlanCard } from "./feishu-cards.mjs";
+import { createDailyTaskGenerator, isoWeekId } from "./daily-task-generator.mjs";
 
 export function createManagerService(deps) {
   const {
@@ -11,6 +12,9 @@ export function createManagerService(deps) {
     settings,
   } = deps;
   const transaction = deps.transaction || ((fn) => fn());
+  const dailyTaskGenerator = deps.dailyTaskGenerator || (deps.projectOps
+    ? createDailyTaskGenerator({ tasks, projectOps: deps.projectOps })
+    : { materialize: async () => [] });
   const nowDate = () => deps.clock?.now?.() || new Date();
 
   async function ingest({ messageId, text, chatId = "", senderId = "" }) {
@@ -213,12 +217,21 @@ export function createManagerService(deps) {
     const currentNow = now ? new Date(now) : nowDate();
     const scheduleDate = date || localDate(currentNow, settings.timezone);
     const activeTasks = tasks.listActive().filter((task) => task.status !== "deferred");
-    const result = buildDailySchedule({
-      date: scheduleDate,
-      now: currentNow.toISOString(),
-      tasks: activeTasks,
-      settings,
-    });
+    const existingBlocks = ops.currentSchedule(scheduleDate);
+    const hasCurrentBlock = existingBlocks.some((block) => block.status === "doing");
+    const result = hasCurrentBlock
+      ? replanRemaining({
+        schedule: { date: scheduleDate, blocks: existingBlocks },
+        now: currentNow.toISOString(),
+        tasks: activeTasks,
+        settings,
+      })
+      : buildDailySchedule({
+        date: scheduleDate,
+        now: currentNow.toISOString(),
+        tasks: activeTasks,
+        settings,
+      });
 
     for (const task of activeTasks) ops.cancelPendingReminders(task.id);
     const stored = ops.replaceSchedule({ date: scheduleDate, blocks: result.blocks });
@@ -263,7 +276,7 @@ export function createManagerService(deps) {
     ops.enqueueOutbox({
       kind: isDailyPlan ? "daily_plan_card" : "replan_card",
       payload: {
-        card: renderDailyPlanCard({ date: scheduleDate, blocks: enriched }),
+        card: renderDailyPlanCard({ date: scheduleDate, blocks: enriched, capacityWarnings: result.capacityWarnings }),
         changed: reason,
         reason,
       },
@@ -274,7 +287,7 @@ export function createManagerService(deps) {
       payload: { date: scheduleDate, version: stored.version, reason, taskIds: [...selectedIds] },
       idempotencyKey: `schedule-event:${scheduleDate}:${stored.version}`,
     });
-    return { ...stored, deferred: result.deferred, reasons: result.reasons };
+    return { ...stored, deferred: result.deferred, reasons: result.reasons, capacityWarnings: result.capacityWarnings };
   }
 
   async function resumeDeferredTask(taskId) {
@@ -340,11 +353,18 @@ export function createManagerService(deps) {
     ingest,
     handleAction,
     replanDay,
-    dispatchDay: (options = {}) => replanDay({ ...options, reason: "daily_plan" }),
+    dispatchDay,
     runMiddayCheck,
     runDayClose,
     resumeDeferredTask,
   };
+
+  async function dispatchDay(options = {}) {
+    const currentNow = options.now ? new Date(options.now) : nowDate();
+    const date = options.date || localDate(currentNow, settings.timezone);
+    await dailyTaskGenerator.materialize({ weekId: isoWeekId(date), date });
+    return replanDay({ ...options, date, reason: "daily_plan" });
+  }
 }
 
 function renderStatusMessage(action, task) {

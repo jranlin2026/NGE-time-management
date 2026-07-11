@@ -61,10 +61,15 @@ test("current task card exposes incomplete checkpoints as individual actions", (
 });
 
 test("renders plan, intervention, and review cards with factual content", () => {
-  const plan = renderDailyPlanCard({ date: "2026-07-10", blocks: [{ ...task, startsAt: "10:00", endsAt: "12:00", reason: "个人IP阶段优先" }] });
+  const plan = renderDailyPlanCard({
+    date: "2026-07-10",
+    blocks: [{ ...task, startsAt: "10:00", endsAt: "12:00", reason: "个人IP阶段优先" }],
+    capacityWarnings: ["个人IP 最低容量无法在容量上限内排入"],
+  });
   const intervention = renderInterventionCard({ task, minimumAction: "打开相机说完第一遍", minutes: 15 });
   const review = renderReviewCard({ date: "2026-07-10", criticalCompleted: 2, criticalPlanned: 3, completionRate: 67, procrastinationCount: 1, tomorrowCandidates: ["极享 OS 测试"] });
   assert.match(JSON.stringify(plan), /个人IP阶段优先/);
+  assert.match(JSON.stringify(plan), /最低容量无法在容量上限内排入/);
   assert.match(JSON.stringify(intervention), /打开相机说完第一遍/);
   assert.match(JSON.stringify(review), /67%/);
 });

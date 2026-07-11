@@ -12,12 +12,17 @@ export function buildDailySchedule({ date, now, tasks, settings }) {
         date,
         projectBoosts: settings.projectBoosts || [],
       });
-      return { task, ...details };
+      const overrideScore = task.project === "极享OS" && task.impact === "system_unusable_bug" ? 10_000 : 0;
+      return { task, ...details, score: details.score + overrideScore };
     })
     .filter((item) => item.score > -100)
     .sort(compareRanked);
   const candidates = orderRankedTasks(ranked, settings.projectMinimums || {});
   const blocks = [];
+  const capacityLimitMinutes = Math.max(0, Math.floor(
+    settings.capacityLimitMinutes ?? windowMinutes(settings.windows) * Number(settings.capacityRatio || 1),
+  ));
+  const budgetRemaining = () => capacityLimitMinutes - blocks.reduce(blockMinutes, 0);
   const unfinished = new Set();
   const scheduled = [];
   for (const item of candidates) {
@@ -29,7 +34,8 @@ export function buildDailySchedule({ date, now, tasks, settings }) {
       if (!slot) break;
       const available = Math.floor((slot.end - slot.start) / 60_000);
       if (available <= 0) break;
-      const minutes = Math.min(remaining, available, 120);
+      const minutes = Math.min(remaining, available, 120, budgetRemaining());
+      if (minutes <= 0) break;
       const start = new Date(slot.start);
       const end = new Date(slot.start + minutes * 60_000);
       blocks.push({
@@ -51,11 +57,13 @@ export function buildDailySchedule({ date, now, tasks, settings }) {
     ...unfinished,
     ...ranked.filter((item) => !selectedIds.has(item.task.id)).map((item) => item.task.id),
   ];
+  const capacityWarnings = capacityWarningsFor({ blocks, tasks, settings });
   return {
     date,
     blocks,
     deferred: [...new Set(deferred)],
     reasons: Object.fromEntries(scheduled.map((item) => [item.task.id, renderReason(item)])),
+    capacityWarnings,
   };
 }
 
@@ -111,13 +119,48 @@ export function replanRemaining({ schedule, now, tasks, settings }) {
     date: schedule.date,
     now: effectiveNow,
     tasks: candidates,
-    settings: { ...settings, maxCriticalTasks: remainingLimit },
+    settings: {
+      ...settings,
+      maxCriticalTasks: remainingLimit,
+      capacityLimitMinutes: Math.max(
+        0,
+        Math.floor(windowMinutes(settings.windows) * Number(settings.capacityRatio || 1)) - currentMinutes,
+      ),
+    },
   });
   return {
     ...replanned,
     blocks: [current, ...replanned.blocks],
     deferred: [...new Set(replanned.deferred)],
   };
+}
+
+function blockMinutes(sum, block) {
+  return sum + (new Date(block.endsAt) - new Date(block.startsAt)) / 60_000;
+}
+
+function minutesBetweenClockTimes(start, end) {
+  const [startHour, startMinute] = start.split(":").map(Number);
+  const [endHour, endMinute] = end.split(":").map(Number);
+  return (endHour * 60 + endMinute) - (startHour * 60 + startMinute);
+}
+
+function windowMinutes(definitions = []) {
+  return definitions.reduce((sum, [start, end]) => sum + minutesBetweenClockTimes(start, end), 0);
+}
+
+function capacityWarningsFor({ blocks, tasks, settings }) {
+  const minimumMinutes = Number(settings.projectMinimumMinutes || 0);
+  if (minimumMinutes <= 0) return [];
+  const projectByTaskId = new Map(tasks.map((task) => [task.id, task.project]));
+  const scheduledMinutes = new Map();
+  for (const block of blocks) {
+    const project = projectByTaskId.get(block.taskId);
+    scheduledMinutes.set(project, (scheduledMinutes.get(project) || 0) + blockMinutes(0, block));
+  }
+  return Object.entries(settings.projectMinimums || {})
+    .filter(([project, count]) => (scheduledMinutes.get(project) || 0) < Number(count) * minimumMinutes)
+    .map(([project, count]) => `${project} 最低容量 ${Number(count) * minimumMinutes} 分钟无法在容量上限内排入`);
 }
 
 function buildWindows(date, definitions, timezone, now) {
