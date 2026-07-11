@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { openDatabase } from "../src/db/database.mjs";
+import { openDatabase, withTransaction } from "../src/db/database.mjs";
 import { createOperationsRepository } from "../src/db/operations-repository.mjs";
 import { createProjectOperationsRepository } from "../src/db/project-operations-repository.mjs";
 import { createProjectMarkdownRepository } from "../src/lib/project-markdown-repository.mjs";
@@ -15,10 +15,22 @@ const PROJECT_SPEC = {
   deliverableId: "first", deliverableName: "首个交付项",
 };
 
-async function setup({ hooks = {}, activate = true } = {}) {
+async function setup({ hooks = {}, activate = true, failConfirmedEventOnce = false } = {}) {
   const kbDir = await fs.mkdtemp(path.join(os.tmpdir(), "weekly-service-"));
   const db = openDatabase(":memory:");
-  const ops = createOperationsRepository(db, { now: () => "2026-07-12T14:00:00.000Z", id: (() => { let n = 0; return () => `id-${++n}`; })() });
+  const realOps = createOperationsRepository(db, { now: () => "2026-07-12T14:00:00.000Z", id: (() => { let n = 0; return () => `id-${++n}`; })() });
+  let shouldFailConfirmedEvent = failConfirmedEventOnce;
+  const ops = new Proxy(realOps, { get(target, key) {
+    if (key !== "appendEvent") return target[key];
+    return (input) => {
+      const result = target.appendEvent(input);
+      if (shouldFailConfirmedEvent && input.kind === "weekly_plan_confirmed") {
+        shouldFailConfirmedEvent = false;
+        throw new Error("crash:confirmed-event");
+      }
+      return result;
+    };
+  } });
   const projectOps = createProjectOperationsRepository(db, { now: () => "2026-07-12T14:00:00.000Z" });
   const projects = createProjectMarkdownRepository({ kbDir, now: () => "2026-07-12T14:00:00.000Z" });
   await projects.ensureDraftTemplates([PROJECT_SPEC]);
@@ -30,9 +42,29 @@ async function setup({ hooks = {}, activate = true } = {}) {
     deliverableChanges: [{ action: "update", projectId: "personal-ip", milestoneId: "launch", deliverableId: "first", name: "第二个成果", weight: 100 }],
     tasks: [],
   }) };
-  const service = createWeeklyPlanningService({ projectRepo: projects, weeklyPlanRepo: weeklyPlans, projectOps, ops, analyzer, hooks });
+  const service = createWeeklyPlanningService({
+    projectRepo: projects, weeklyPlanRepo: weeklyPlans, projectOps, ops, analyzer, hooks,
+    transaction: (fn) => withTransaction(db, fn),
+  });
   return { kbDir, db, ops, projectOps, projects, weeklyPlans, service };
 }
+
+test("rolls back final confirmation when the confirmed event cannot be appended", async (t) => {
+  const fixture = await setup({ failConfirmedEventOnce: true });
+  t.after(async () => { fixture.db.close(); await fs.rm(fixture.kbDir, { recursive: true, force: true }); });
+  const draft = await fixture.service.generateDraft({ weekId: "2026-W29" });
+
+  await assert.rejects(
+    fixture.service.confirm({ weekId: "2026-W29", version: draft.version, eventId: "evt-confirm" }),
+    /crash:confirmed-event/,
+  );
+  assert.equal(fixture.projectOps.getWeeklyPlan("2026-W29", 1).status, "confirming");
+  assert.equal(fixture.ops.listEvents({ kind: "weekly_plan_confirmed" }).length, 0);
+
+  const confirmed = await fixture.service.confirm({ weekId: "2026-W29", version: 1, eventId: "evt-retry" });
+  assert.equal(confirmed.status, "confirmed");
+  assert.equal(fixture.ops.listEvents({ kind: "weekly_plan_confirmed" }).length, 1);
+});
 
 test("generates the next versioned draft in both stores and queues one confirmation card", async (t) => {
   const fixture = await setup();
@@ -122,5 +154,29 @@ for (const crashPoint of ["afterBegin", "afterProject", "afterCanonical", "befor
     const logDir = path.join(fixture.kbDir, "项目变更记录");
     const logs = await fs.readdir(logDir).catch(() => []);
     assert.equal(logs.length, 1);
+  });
+}
+
+for (const crashPoint of ["afterAdjustmentReservation", "afterAdjustmentDraft"]) {
+  test(`resumes adjustment after ${crashPoint} at the reserved version`, async (t) => {
+    let crashed = false;
+    const fixture = await setup({ hooks: { [crashPoint]: async () => {
+      if (!crashed) { crashed = true; throw new Error(`crash:${crashPoint}`); }
+    } } });
+    t.after(async () => { fixture.db.close(); await fs.rm(fixture.kbDir, { recursive: true, force: true }); });
+    const draft = await fixture.service.generateDraft({ weekId: "2026-W29" });
+
+    await assert.rejects(
+      fixture.service.requestAdjustment({ weekId: "2026-W29", version: draft.version, reason: "任务太多", eventId: "evt-adjust-crash" }),
+      new RegExp(`crash:${crashPoint}`),
+    );
+    const result = await fixture.service.requestAdjustment({
+      weekId: "2026-W29", version: draft.version, reason: "不应覆盖", eventId: "evt-adjust-crash",
+    });
+
+    assert.equal(result.version, 2);
+    assert.equal(fixture.projectOps.getLatestWeeklyPlan("2026-W29").version, 2);
+    assert.equal(fixture.ops.listEvents({ kind: "weekly_plan_adjustment_requested" }).length, 1);
+    assert.equal(fixture.ops.listOutbox().filter((row) => row.kind === "weekly_plan_card" && row.payload.version === 2).length, 1);
   });
 }

@@ -58,7 +58,7 @@ export function createManagerApp(config, deps = {}) {
   const settings = loadManagerSettings(config, ops);
   const analyzer = deps.analyzer || createCodexAnalyzer(config);
   const weeklyPlanning = deps.weeklyPlanning || createWeeklyPlanningService({
-    projectRepo, weeklyPlanRepo, projectOps, ops, analyzer,
+    projectRepo, weeklyPlanRepo, projectOps, ops, analyzer, transaction: (fn) => withTransaction(db, fn),
   });
   let manager;
 
