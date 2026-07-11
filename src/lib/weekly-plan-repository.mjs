@@ -201,7 +201,8 @@ export function createWeeklyPlanRepository({
   }
 
   async function confirm({ weekId, version, expectedHash }) {
-    const draftPath = draftFor(weekId, version);
+    const numericVersion = Number(version);
+    const draftPath = draftFor(weekId, numericVersion);
     await beforeDraftVerification?.({ draftPath });
     const draftContent = await fs.readFile(draftPath, "utf8");
     if (hash(draftContent) !== expectedHash) {
@@ -209,6 +210,9 @@ export function createWeeklyPlanRepository({
     }
     const draft = parse(draftContent, draftPath);
     if (draft.status !== "draft") throw new Error("weekly plan is not a draft");
+    if (draft.weekId !== weekId || draft.version !== numericVersion) {
+      throw new Error("weekly plan draft identity mismatch");
+    }
     const content = render({ ...draft, status: "confirmed", confirmedAt: now() });
     const canonicalPath = canonicalFor(weekId);
     await afterApprovedDraftRead?.({ draftPath, canonicalPath });

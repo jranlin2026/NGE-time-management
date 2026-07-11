@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -25,6 +26,8 @@ const plan = {
     date: "2026-07-13", requiresEvidence: true, impact: "normal",
   }],
 };
+
+const sha256 = (content) => createHash("sha256").update(content, "utf8").digest("hex");
 
 test("writes and reads a draft, then confirms only the unchanged version", async () => {
   const timestamps = ["2026-07-12T22:00:00+08:00", "2026-07-13T07:00:00+08:00"];
@@ -56,6 +59,24 @@ test("rejects confirmation after the weekly plan changed", async () => {
   await assert.rejects(() => repo.confirm({
     weekId: "2026-W29", version: 1, expectedHash: draft.contentHash,
   }), /weekly plan changed since read/);
+});
+
+test("rejects drafts whose internal week or version differs from the requested identity", async () => {
+  for (const mutate of [
+    (content) => content.replace("week_id: 2026-W29", "week_id: 2026-W30"),
+    (content) => content.replace("version: 1", "version: 2"),
+  ]) {
+    const iterationRoot = await fs.mkdtemp(path.join(root, "identity-mismatch-"));
+    const repo = createWeeklyPlanRepository({ kbDir: iterationRoot });
+    const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
+    const changed = mutate(draft.rawContent);
+    await fs.writeFile(draft.filePath, changed, "utf8");
+
+    await assert.rejects(() => repo.confirm({
+      weekId: "2026-W29", version: 1, expectedHash: sha256(changed),
+    }), /weekly plan draft identity mismatch/);
+    await assert.rejects(() => fs.access(path.join(iterationRoot, "周计划", "2026-W29.md")), { code: "ENOENT" });
+  }
 });
 
 test("rejects a draft mutation before hash verification without publishing canonical", async () => {
