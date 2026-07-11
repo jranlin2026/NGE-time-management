@@ -247,6 +247,17 @@ export function createProjectMarkdownRepository({ kbDir, now = () => new Date().
   }
 
   async function writeManagedChange(input, mutate) {
+    const operationLogPath = input.operationKey
+      ? path.join(kbDir, "项目变更记录", `${input.operationKey.replace(/[^a-zA-Z0-9._-]/g, "-")}.md`)
+      : null;
+    if (operationLogPath) {
+      try {
+        await fs.access(operationLogPath);
+        return readProject(input.projectId);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
     const current = await readProject(input.projectId);
     if (current.contentHash !== input.expectedHash) throw new Error("project changed since read");
     const beforeProgress = computeProjectProgress(current);
@@ -260,7 +271,7 @@ export function createProjectMarkdownRepository({ kbDir, now = () => new Date().
     const timestamp = now();
     const logDir = path.join(kbDir, "项目变更记录");
     await fs.mkdir(logDir, { recursive: true });
-    const logPath = path.join(logDir, `${safeTimestamp(timestamp)}-${input.projectId}-${id()}.md`);
+    const logPath = operationLogPath || path.join(logDir, `${safeTimestamp(timestamp)}-${input.projectId}-${id()}.md`);
     const evidence = input.evidence ?? "";
     const reason = input.reason ?? "deliverable accepted";
     await fs.writeFile(logPath, `# 项目变更记录\n\n- 项目: ${input.projectId}\n- 时间: ${timestamp}\n- 变更前进度: ${beforeProgress}\n- 变更后进度: ${afterProgress}\n- 验收证据: ${evidence}\n- 原因: ${reason}\n`, "utf8");
@@ -285,8 +296,7 @@ export function createProjectMarkdownRepository({ kbDir, now = () => new Date().
         if (!milestone) throw new Error(`milestone not found: ${change.milestoneId}`);
         const index = milestone.deliverables.findIndex((item) => item.id === (change.deliverableId ?? change.id));
         if (change.action === "remove") {
-          if (index < 0) throw new Error(`deliverable not found: ${change.deliverableId ?? change.id}`);
-          milestone.deliverables.splice(index, 1);
+          if (index >= 0) milestone.deliverables.splice(index, 1);
         } else if (index >= 0) {
           milestone.deliverables[index] = { ...milestone.deliverables[index], ...change, id: milestone.deliverables[index].id, milestoneId: milestone.id };
         } else {

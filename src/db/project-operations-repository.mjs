@@ -60,6 +60,41 @@ export function createProjectOperationsRepository(db, deps = {}) {
     return getWeeklyPlan(weekId, version);
   }
 
+  function beginWeeklyPlanConfirmation({ weekId, version, eventId }) {
+    const current = getWeeklyPlan(weekId, version);
+    if (!current) throw new Error(`weekly plan not found: ${weekId} version ${version}`);
+    if (current.status === "confirmed" || current.status === "confirming") return current;
+    const plan = { ...current.plan, confirmation: { eventId: eventId || null, appliedProjectIds: [] } };
+    const result = db.prepare(`UPDATE weekly_plans SET status='confirming', plan_json=?, confirmation_event_id=?
+      WHERE week_id=? AND version=? AND status='draft'`).run(JSON.stringify(plan), eventId || null, weekId, version);
+    if (!result.changes) throw new Error(`weekly plan cannot begin confirmation: ${weekId} version ${version}`);
+    return getWeeklyPlan(weekId, version);
+  }
+
+  function markWeeklyPlanProjectApplied({ weekId, version, projectId }) {
+    const current = getWeeklyPlan(weekId, version);
+    if (!current || current.status !== "confirming") throw new Error("weekly plan is not confirming");
+    const appliedProjectIds = [...new Set([...(current.plan.confirmation?.appliedProjectIds || []), projectId])];
+    const plan = { ...current.plan, confirmation: { ...current.plan.confirmation, appliedProjectIds } };
+    db.prepare("UPDATE weekly_plans SET plan_json=? WHERE week_id=? AND version=? AND status='confirming'")
+      .run(JSON.stringify(plan), weekId, version);
+    return getWeeklyPlan(weekId, version);
+  }
+
+  function finalizeWeeklyPlanConfirmation({ weekId, version, markdownPath, contentHash }) {
+    const confirming = getWeeklyPlan(weekId, version);
+    const result = db.prepare(`UPDATE weekly_plans SET status='confirmed', confirmed_at=?,
+      confirmation_event_id=?, markdown_path=?, content_hash=?
+      WHERE week_id=? AND version=? AND status='confirming'`)
+      .run(now(), confirming?.confirmationEventId || null, markdownPath, contentHash, weekId, version);
+    if (!result.changes) {
+      const current = getWeeklyPlan(weekId, version);
+      if (current?.status === "confirmed") return current;
+      throw new Error(`weekly plan is not confirming: ${weekId} version ${version}`);
+    }
+    return getWeeklyPlan(weekId, version);
+  }
+
   function getAcceptance(acceptanceId) {
     const row = db.prepare("SELECT * FROM task_acceptances WHERE id = ?").get(acceptanceId);
     return row ? mapAcceptance(row) : null;
@@ -135,6 +170,9 @@ export function createProjectOperationsRepository(db, deps = {}) {
     getLatestWeeklyPlan,
     getConfirmedWeeklyPlan,
     confirmWeeklyPlan,
+    beginWeeklyPlanConfirmation,
+    markWeeklyPlanProjectApplied,
+    finalizeWeeklyPlanConfirmation,
     saveAcceptance,
     getAcceptance,
     findPendingAcceptanceByTask,

@@ -15,7 +15,7 @@ const PROJECT_SPEC = {
   deliverableId: "first", deliverableName: "首个交付项",
 };
 
-async function setup() {
+async function setup({ hooks = {}, activate = true } = {}) {
   const kbDir = await fs.mkdtemp(path.join(os.tmpdir(), "weekly-service-"));
   const db = openDatabase(":memory:");
   const ops = createOperationsRepository(db, { now: () => "2026-07-12T14:00:00.000Z", id: (() => { let n = 0; return () => `id-${++n}`; })() });
@@ -23,14 +23,14 @@ async function setup() {
   const projects = createProjectMarkdownRepository({ kbDir, now: () => "2026-07-12T14:00:00.000Z" });
   await projects.ensureDraftTemplates([PROJECT_SPEC]);
   const draftProject = await projects.readProject("personal-ip");
-  await projects.confirmDraft("personal-ip", draftProject.contentHash);
+  if (activate) await projects.confirmDraft("personal-ip", draftProject.contentHash);
   const weeklyPlans = createWeeklyPlanRepository({ kbDir, now: () => "2026-07-12T14:00:00.000Z" });
   const analyzer = { analyzeWeeklyPlan: async () => ({
     outcomes: ["交付第二个成果"],
     deliverableChanges: [{ action: "update", projectId: "personal-ip", milestoneId: "launch", deliverableId: "first", name: "第二个成果", weight: 100 }],
     tasks: [],
   }) };
-  const service = createWeeklyPlanningService({ projectRepo: projects, weeklyPlanRepo: weeklyPlans, projectOps, ops, analyzer });
+  const service = createWeeklyPlanningService({ projectRepo: projects, weeklyPlanRepo: weeklyPlans, projectOps, ops, analyzer, hooks });
   return { kbDir, db, ops, projectOps, projects, weeklyPlans, service };
 }
 
@@ -78,8 +78,49 @@ test("records an adjustment request without confirming the draft", async (t) => 
   t.after(async () => { fixture.db.close(); await fs.rm(fixture.kbDir, { recursive: true, force: true }); });
   const draft = await fixture.service.generateDraft({ weekId: "2026-W29" });
 
-  await fixture.service.requestAdjustment({ weekId: "2026-W29", version: draft.version, reason: "任务太多", eventId: "evt-adjust" });
+  const adjusted = await fixture.service.requestAdjustment({ weekId: "2026-W29", version: draft.version, reason: "任务太多", eventId: "evt-adjust" });
+  const repeated = await fixture.service.requestAdjustment({ weekId: "2026-W29", version: draft.version, reason: "重复消息", eventId: "evt-adjust" });
 
   assert.equal(fixture.projectOps.getWeeklyPlan("2026-W29", 1).status, "draft");
+  assert.equal(adjusted.version, 2);
+  assert.equal(repeated.version, 2);
+  assert.equal(fixture.projectOps.getLatestWeeklyPlan("2026-W29").version, 2);
   assert.equal(fixture.ops.listEvents({ kind: "weekly_plan_adjustment_requested" }).length, 1);
 });
+
+test("refuses partial weekly generation while any project remains draft", async (t) => {
+  const fixture = await setup({ activate: false });
+  t.after(async () => { fixture.db.close(); await fs.rm(fixture.kbDir, { recursive: true, force: true }); });
+
+  const result = await fixture.service.generateDraft({ weekId: "2026-W29" });
+
+  assert.equal(result.status, "setup_required");
+  assert.equal(fixture.projectOps.getLatestWeeklyPlan("2026-W29"), null);
+  assert.equal(fixture.ops.listOutbox().at(-1).kind, "project_setup_card");
+});
+
+for (const crashPoint of ["afterBegin", "afterProject", "afterCanonical", "beforeFinalize"]) {
+  test(`resumes confirmation after ${crashPoint} without duplicate project logs`, async (t) => {
+    let crashed = false;
+    const fixture = await setup({ hooks: {
+      [crashPoint]: async () => {
+        if (!crashed) { crashed = true; throw new Error(`crash:${crashPoint}`); }
+      },
+    } });
+    t.after(async () => { fixture.db.close(); await fs.rm(fixture.kbDir, { recursive: true, force: true }); });
+    const draft = await fixture.service.generateDraft({ weekId: "2026-W29" });
+
+    await assert.rejects(
+      fixture.service.confirm({ weekId: "2026-W29", version: draft.version, eventId: "evt-original" }),
+      new RegExp(`crash:${crashPoint}`),
+    );
+    assert.equal(fixture.projectOps.getWeeklyPlan("2026-W29", 1).status, "confirming");
+    const result = await fixture.service.confirm({ weekId: "2026-W29", version: 1, eventId: "evt-retry" });
+
+    assert.equal(result.status, "confirmed");
+    assert.equal(result.confirmationEventId, "evt-original");
+    const logDir = path.join(fixture.kbDir, "项目变更记录");
+    const logs = await fs.readdir(logDir).catch(() => []);
+    assert.equal(logs.length, 1);
+  });
+}

@@ -1,9 +1,18 @@
-export function createWeeklyPlanningService({ projectRepo, weeklyPlanRepo, projectOps, ops, analyzer }) {
+export function createWeeklyPlanningService({ projectRepo, weeklyPlanRepo, projectOps, ops, analyzer, hooks = {} }) {
   async function generateDraft({ weekId }) {
-    const projects = (await projectRepo.listProjects()).filter((project) => project.status === "active");
+    const allProjects = await projectRepo.listProjects();
+    const drafts = allProjects.filter((project) => project.status === "draft");
+    if (drafts.length) {
+      ops.enqueueOutbox({
+        kind: "project_setup_card", payload: { projects: drafts },
+        idempotencyKey: `project-setup-card:${drafts.map((project) => project.contentHash).join(":")}`,
+      });
+      return { status: "setup_required", projects: drafts };
+    }
+    const projects = allProjects.filter((project) => project.status === "active");
     const latest = projectOps.getLatestWeeklyPlan(weekId);
     const version = (latest?.version || 0) + 1;
-    const previousPlan = projectOps.getConfirmedWeeklyPlan(weekId)?.plan || null;
+    const previousPlan = latest?.plan || projectOps.getConfirmedWeeklyPlan(weekId)?.plan || null;
     const plan = await analyzer.analyzeWeeklyPlan({ weekId, projects, previousPlan });
     const markdown = await weeklyPlanRepo.writeDraft({ weekId, version, plan });
     const saved = projectOps.saveWeeklyPlan({
@@ -27,37 +36,37 @@ export function createWeeklyPlanningService({ projectRepo, weeklyPlanRepo, proje
     const numericVersion = Number(version);
     const stored = projectOps.getWeeklyPlan(weekId, numericVersion);
     if (!stored) throw new Error(`weekly plan not found: ${weekId} version ${numericVersion}`);
-    if (stored.status === "confirmed") {
-      if (!eventId || stored.confirmationEventId === eventId) return stored;
-      throw new Error(`weekly plan already confirmed: ${weekId} version ${numericVersion}`);
-    }
-
-    const confirmedMarkdown = await weeklyPlanRepo.confirm({
-      weekId,
-      version: numericVersion,
-      expectedHash: stored.contentHash,
-    });
-    const changesByProject = Map.groupBy(stored.plan.deliverableChanges || [], (change) => change.projectId);
+    if (stored.status === "confirmed") return stored;
+    let progress = projectOps.beginWeeklyPlanConfirmation({ weekId, version: numericVersion, eventId });
+    await hooks.afterBegin?.(progress);
+    const changesByProject = Map.groupBy(progress.plan.deliverableChanges || [], (change) => change.projectId);
     for (const [projectId, changes] of changesByProject) {
+      if (progress.plan.confirmation?.appliedProjectIds?.includes(projectId)) continue;
       const project = await projectRepo.readProject(projectId);
       await projectRepo.applyDeliverableChanges({
         projectId,
         expectedHash: project.contentHash,
         changes,
         reason: `weekly plan confirmed: ${weekId} v${numericVersion}`,
+        operationKey: `weekly:${weekId}:${numericVersion}:${projectId}`,
       });
+      progress = projectOps.markWeeklyPlanProjectApplied({ weekId, version: numericVersion, projectId });
+      await hooks.afterProject?.({ projectId, progress });
     }
-    projectOps.saveWeeklyPlan({
-      ...stored,
-      markdownPath: confirmedMarkdown.filePath,
-      contentHash: confirmedMarkdown.contentHash,
-      status: "confirmed",
+    const confirmedMarkdown = await weeklyPlanRepo.confirm({
+      weekId, version: numericVersion, expectedHash: stored.contentHash,
     });
-    const result = projectOps.confirmWeeklyPlan({ weekId, version: numericVersion, eventId });
+    await hooks.afterCanonical?.(confirmedMarkdown);
+    await hooks.beforeFinalize?.(progress);
+    const result = projectOps.finalizeWeeklyPlanConfirmation({
+      weekId, version: numericVersion, markdownPath: confirmedMarkdown.filePath, contentHash: confirmedMarkdown.contentHash,
+    });
     ops.appendEvent({
       kind: "weekly_plan_confirmed",
       payload: { weekId, version: numericVersion },
-      idempotencyKey: eventId ? `weekly-plan-confirmed:${eventId}` : `weekly-plan-confirmed:${weekId}:${numericVersion}`,
+      idempotencyKey: result.confirmationEventId
+        ? `weekly-plan-confirmed:${result.confirmationEventId}`
+        : `weekly-plan-confirmed:${weekId}:${numericVersion}`,
     });
     return result;
   }
@@ -66,12 +75,16 @@ export function createWeeklyPlanningService({ projectRepo, weeklyPlanRepo, proje
     const numericVersion = Number(version);
     const plan = projectOps.getWeeklyPlan(weekId, numericVersion);
     if (!plan) throw new Error(`weekly plan not found: ${weekId} version ${numericVersion}`);
+    const eventKey = eventId ? `weekly-plan-adjustment:${eventId}` : null;
+    const duplicate = eventKey ? ops.findEventByIdempotencyKey(eventKey) : null;
+    if (duplicate?.payload.generatedVersion) return projectOps.getWeeklyPlan(weekId, duplicate.payload.generatedVersion);
+    const generated = await generateDraft({ weekId });
     ops.appendEvent({
       kind: "weekly_plan_adjustment_requested",
-      payload: { weekId, version: numericVersion, reason },
-      idempotencyKey: eventId ? `weekly-plan-adjustment:${eventId}` : null,
+      payload: { weekId, version: numericVersion, reason, generatedVersion: generated.version },
+      idempotencyKey: eventKey,
     });
-    return plan;
+    return generated;
   }
 
   async function getEffectivePlan({ weekId, previousWeekId }) {

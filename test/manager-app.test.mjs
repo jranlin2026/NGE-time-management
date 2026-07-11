@@ -3,7 +3,7 @@ import test from "node:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createCardActionHandler, createManagerApp, renderCardActionResponse } from "../src/manager-app.mjs";
+import { createCardActionHandler, createManagerApp, createMessageHandler, renderCardActionResponse } from "../src/manager-app.mjs";
 
 test("start callback replaces the source card with a doing-state card", () => {
   const response = renderCardActionResponse(
@@ -116,4 +116,40 @@ test("weekly adjustment prompts for a concrete reason without confirming", async
   const response = await callback({ action: "adjust_weekly_plan", weekId: "2026-W29", version: 1 });
   assert.match(response.toast.content, /调整周计划｜具体原因/);
   assert.equal(confirmations, 0);
+});
+
+test("routes a weekly adjustment reply to weekly planning with the pending plan identity", async () => {
+  const settings = new Map([["pending_weekly_adjustment", { weekId: "2026-W29", version: 1 }]]);
+  const ops = {
+    getSetting: (key) => settings.get(key),
+    setSetting: (key, value) => settings.set(key, value),
+  };
+  let input;
+  const handler = createMessageHandler({
+    config: { feishuReceiveId: "owner", feishuReceiveIdType: "open_id" }, ops,
+    manager: { handleAction: async () => assert.fail("manager action must not handle weekly adjustment") },
+    weeklyPlanning: { requestAdjustment: async (value) => { input = value; } },
+  });
+
+  await handler({ kind: "message", text: "调整周计划｜任务太多", messageId: "msg-adjust" });
+
+  assert.deepEqual(input, { weekId: "2026-W29", version: 1, reason: "任务太多", eventId: "message:msg-adjust" });
+  assert.equal(settings.get("pending_weekly_adjustment"), null);
+});
+
+test("app exposes a callable weekly generation path after setup", async () => {
+  const generated = [];
+  const projectRepo = { ensureDraftTemplates: async () => ({ projects: [] }) };
+  const app = createManagerApp({
+    dbPath: ":memory:", kbDir: "/unused", backupDir: "/unused", markdownExportDir: "/unused",
+    timezone: "Asia/Shanghai", feishuReceiveId: "owner",
+    schedule: { plan: "08:30", firstTask: "10:00", midday: "12:00", afternoon: "14:00", dayClose: "18:00", eveningStart: "20:00", eveningEnd: "22:00", noResponseMinutes: 15 },
+  }, {
+    projectRepo, weeklyPlanRepo: {}, weeklyPlanning: { generateDraft: async (input) => { generated.push(input); return { status: "draft" }; } },
+    connectFeishu: async () => ({ stop: async () => {} }), setInterval: () => 1, clearInterval: () => {},
+  });
+
+  await app.generateWeeklyPlan({ weekId: "2026-W29" });
+  assert.deepEqual(generated, [{ weekId: "2026-W29" }]);
+  await app.stop();
 });

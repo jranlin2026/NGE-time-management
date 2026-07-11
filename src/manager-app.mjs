@@ -193,6 +193,7 @@ export function createManagerApp(config, deps = {}) {
   return {
     start,
     stop,
+    generateWeeklyPlan: (input) => weeklyPlanning.generateDraft(input),
     state: { db, tasks, ops, projectOps, projectRepo, weeklyPlanRepo, weeklyPlanning, manager, reminderEngine, outboxWorker, settings },
   };
 }
@@ -206,41 +207,12 @@ export async function connectFeishu(config, { manager, tasks, ops, projectRepo, 
     verificationToken: config.feishuVerificationToken || undefined,
     encryptKey: config.feishuEncryptKey || undefined,
   });
-  const handleCardAction = createCardActionHandler({ manager, projectRepo, weeklyPlanning });
+  const handleCardAction = createCardActionHandler({ manager, projectRepo, weeklyPlanning, ops });
+  const handleMessage = createMessageHandler({ config, manager, ops, weeklyPlanning });
   dispatcher.register({
     "im.message.receive_v1": async (data) => {
       const message = extractMessageText(data);
-      if (message.kind !== "message" || !message.text) return;
-      if ((!config.feishuReceiveId || (message.chatId && config.feishuReceiveIdType !== "chat_id")) && (message.chatId || message.senderId)) {
-        const destination = selectReplyDestination(message);
-        config.feishuReceiveId = destination.receiveId;
-        config.feishuReceiveIdType = destination.receiveIdType;
-        ops.setSetting("feishu_receive_id", destination.receiveId);
-        ops.setSetting("feishu_receive_destination", destination);
-      }
-      const action = normalizeManagerAction(message.text);
-      if (action) {
-        await manager.handleAction({ ...action, idempotencyKey: `message:${message.messageId}` });
-        return;
-      }
-      if (isDispatchCommand(message.text) || isPlanQuery(message.text)) {
-        await manager.dispatchDay();
-        return;
-      }
-      if (isHelpCommand(message.text)) {
-        ops.enqueueOutbox({
-          kind: "help_message",
-          payload: {},
-          idempotencyKey: `help:${message.messageId}`,
-        });
-        return;
-      }
-      await manager.ingest({
-        messageId: message.messageId,
-        text: message.text,
-        chatId: message.chatId,
-        senderId: message.senderId,
-      });
+      return handleMessage(message);
     },
     "card.action.trigger": async (data) => {
       const extracted = extractCardAction(data);
@@ -280,7 +252,40 @@ export async function connectFeishu(config, { manager, tasks, ops, projectRepo, 
   };
 }
 
-export function createCardActionHandler({ manager, projectRepo, weeklyPlanning }) {
+export function createMessageHandler({ config, manager, ops, weeklyPlanning }) {
+  return async function handleMessage(message) {
+    if (message.kind !== "message" || !message.text) return;
+    if ((!config.feishuReceiveId || (message.chatId && config.feishuReceiveIdType !== "chat_id")) && (message.chatId || message.senderId)) {
+      const destination = selectReplyDestination(message);
+      config.feishuReceiveId = destination.receiveId;
+      config.feishuReceiveIdType = destination.receiveIdType;
+      ops.setSetting("feishu_receive_id", destination.receiveId);
+      ops.setSetting("feishu_receive_destination", destination);
+    }
+    const action = normalizeManagerAction(message.text);
+    if (action?.action === "adjust_weekly_plan") {
+      const pending = ops.getSetting("pending_weekly_adjustment");
+      if (!pending) throw new Error("no weekly plan is awaiting adjustment");
+      await weeklyPlanning.requestAdjustment({
+        ...pending, reason: action.detail, eventId: `message:${message.messageId}`,
+      });
+      ops.setSetting("pending_weekly_adjustment", null);
+      return;
+    }
+    if (action) {
+      await manager.handleAction({ ...action, idempotencyKey: `message:${message.messageId}` });
+      return;
+    }
+    if (isDispatchCommand(message.text) || isPlanQuery(message.text)) return manager.dispatchDay();
+    if (isHelpCommand(message.text)) {
+      ops.enqueueOutbox({ kind: "help_message", payload: {}, idempotencyKey: `help:${message.messageId}` });
+      return;
+    }
+    return manager.ingest({ messageId: message.messageId, text: message.text, chatId: message.chatId, senderId: message.senderId });
+  };
+}
+
+export function createCardActionHandler({ manager, projectRepo, weeklyPlanning, ops }) {
   return async function handleCardAction(action) {
     if (action.action === "confirm_weekly_plan") {
       const plan = await weeklyPlanning.confirm({
@@ -300,6 +305,7 @@ export function createCardActionHandler({ manager, projectRepo, weeklyPlanning }
       return { toast: { type: "success", content: "项目初始设置已确认" }, card: renderConfirmedProjectSetupCard(confirmed) };
     }
     if (action.action === "adjust_weekly_plan") {
+      ops?.setSetting("pending_weekly_adjustment", { weekId: String(action.weekId).trim(), version: Number(action.version) });
       return { toast: { type: "info", content: "请回复：调整周计划｜具体原因" } };
     }
     const result = await manager.handleAction(action);
