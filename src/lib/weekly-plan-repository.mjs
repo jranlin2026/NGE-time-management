@@ -112,87 +112,104 @@ function parse(rawContent, filePath) {
   };
 }
 
-async function atomicWrite(filePath, content) {
+async function publishExclusive(filePath, content, beforeLink) {
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  let handle;
   try {
-    await fs.writeFile(temporaryPath, content, "utf8");
-    await fs.rename(temporaryPath, filePath);
+    handle = await fs.open(temporaryPath, "wx");
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await beforeLink?.({ temporaryPath });
+    await fs.link(temporaryPath, filePath);
   } finally {
+    await handle?.close();
     await fs.rm(temporaryPath, { force: true });
   }
 }
 
-async function atomicCompareReplace(filePath, content, expectedHash, afterClaim) {
-  const suffix = `${process.pid}.${randomUUID()}`;
-  const temporaryPath = `${filePath}.${suffix}.tmp`;
-  const backupPath = `${filePath}.${suffix}.bak`;
-  let claimed = false;
-  try {
-    await fs.writeFile(temporaryPath, content, { encoding: "utf8", flag: "wx" });
-    await fs.rename(filePath, backupPath);
-    claimed = true;
-    await afterClaim?.({ filePath, backupPath, temporaryPath });
-    const claimedContent = await fs.readFile(backupPath, "utf8");
-    if (hash(claimedContent) !== expectedHash) throw new Error("weekly plan changed since read");
-    try {
-      await fs.link(temporaryPath, filePath);
-    } catch (error) {
-      if (error.code === "EEXIST") throw new Error("weekly plan changed during confirmation", { cause: error });
-      throw error;
-    }
-    await fs.rm(temporaryPath, { force: true });
-    await fs.rm(backupPath, { force: true });
-    claimed = false;
-  } catch (error) {
-    if (claimed) {
-      try {
-        await fs.link(backupPath, filePath);
-      } catch (restoreError) {
-        if (restoreError.code !== "EEXIST") throw new AggregateError([error, restoreError], "weekly plan restore failed");
-      }
-    }
-    throw error;
-  } finally {
-    await fs.rm(temporaryPath, { force: true });
-    await fs.rm(backupPath, { force: true });
-  }
+function sameApprovedPlan(confirmed, draft) {
+  return confirmed.weekId === draft.weekId
+    && confirmed.version === draft.version
+    && confirmed.createdAt === draft.createdAt
+    && JSON.stringify(confirmed.outcomes) === JSON.stringify(draft.outcomes)
+    && JSON.stringify(confirmed.deliverableChanges) === JSON.stringify(draft.deliverableChanges)
+    && JSON.stringify(confirmed.tasks) === JSON.stringify(draft.tasks);
 }
 
 export function createWeeklyPlanRepository({
   kbDir,
   now = () => new Date().toISOString(),
-  beforeConfirmClaim,
-  afterConfirmClaim,
+  beforeDraftVerification,
+  afterApprovedDraftRead,
+  beforeCanonicalLink,
 }) {
   const weeklyDir = path.join(kbDir, "周计划");
-  const fileFor = (weekId) => path.join(weeklyDir, `${weekId}.md`);
+  const canonicalFor = (weekId) => path.join(weeklyDir, `${weekId}.md`);
+  const draftFor = (weekId, version) => path.join(weeklyDir, `${weekId}.v${version}.draft.md`);
 
-  async function read(weekId) {
-    return parse(await fs.readFile(fileFor(weekId), "utf8"), fileFor(weekId));
-  }
-
-  async function writePlan(input) {
-    await fs.mkdir(weeklyDir, { recursive: true });
-    const filePath = fileFor(input.weekId);
-    await atomicWrite(filePath, render(input));
-    return read(input.weekId);
+  async function read(weekId, version) {
+    if (version !== undefined) {
+      const filePath = draftFor(weekId, version);
+      return parse(await fs.readFile(filePath, "utf8"), filePath);
+    }
+    const canonicalPath = canonicalFor(weekId);
+    try {
+      return parse(await fs.readFile(canonicalPath, "utf8"), canonicalPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const prefix = `${weekId}.v`;
+    const drafts = (await fs.readdir(weeklyDir)).filter((name) => name.startsWith(prefix) && name.endsWith(".draft.md"));
+    if (drafts.length === 0) throw new Error(`weekly plan not found: ${weekId}`);
+    const versions = drafts.map((name) => Number(name.slice(prefix.length, -".draft.md".length))).filter(Number.isInteger);
+    return read(weekId, Math.max(...versions));
   }
 
   async function writeDraft({ weekId, version, plan }) {
-    return writePlan({
+    await fs.mkdir(weeklyDir, { recursive: true });
+    const input = {
       weekId, version, status: "draft", createdAt: now(), confirmedAt: null,
       outcomes: plan.outcomes, deliverableChanges: plan.deliverableChanges, tasks: plan.tasks,
-    });
+    };
+    const filePath = draftFor(weekId, version);
+    const content = render(input);
+    try {
+      await publishExclusive(filePath, content);
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      const existing = await fs.readFile(filePath, "utf8");
+      if (existing !== content) throw new Error("weekly plan draft version is immutable", { cause: error });
+    }
+    return read(weekId, version);
   }
 
   async function confirm({ weekId, version, expectedHash }) {
-    const current = await read(weekId);
-    if (current.version !== version || current.contentHash !== expectedHash) {
+    const draftPath = draftFor(weekId, version);
+    await beforeDraftVerification?.({ draftPath });
+    const draftContent = await fs.readFile(draftPath, "utf8");
+    if (hash(draftContent) !== expectedHash) {
       throw new Error("weekly plan changed since read");
     }
-    const content = render({ ...current, status: "confirmed", confirmedAt: now() });
-    await beforeConfirmClaim?.({ filePath: current.filePath });
-    await atomicCompareReplace(current.filePath, content, expectedHash, afterConfirmClaim);
+    const draft = parse(draftContent, draftPath);
+    if (draft.status !== "draft") throw new Error("weekly plan is not a draft");
+    const content = render({ ...draft, status: "confirmed", confirmedAt: now() });
+    const canonicalPath = canonicalFor(weekId);
+    await afterApprovedDraftRead?.({ draftPath, canonicalPath });
+    try {
+      await publishExclusive(canonicalPath, content, ({ temporaryPath }) =>
+        beforeCanonicalLink?.({ draftPath, canonicalPath, temporaryPath }));
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      try {
+        const existing = parse(await fs.readFile(canonicalPath, "utf8"), canonicalPath);
+        if (sameApprovedPlan(existing, draft)) return existing;
+      } catch (readError) {
+        throw new Error("confirmed weekly plan is immutable", { cause: readError });
+      }
+      throw new Error("confirmed weekly plan is immutable", { cause: error });
+    }
     return read(weekId);
   }
 

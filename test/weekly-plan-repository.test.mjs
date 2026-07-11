@@ -32,6 +32,7 @@ test("writes and reads a draft, then confirms only the unchanged version", async
   const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
 
   const markdown = await fs.readFile(draft.filePath, "utf8");
+  assert.match(draft.filePath, /2026-W29\.v1\.draft\.md$/);
   assert.match(markdown, /status: draft/);
   assert.match(markdown, /\| task_id \| project_id \| project_name \| milestone_id \| deliverable_id \|/);
   assert.equal(draft.tasks[0].completionStandard, "链接可访问");
@@ -39,8 +40,13 @@ test("writes and reads a draft, then confirms only the unchanged version", async
     weekId: "2026-W29", version: 1, expectedHash: draft.contentHash,
   });
   assert.equal(confirmed.status, "confirmed");
+  assert.match(confirmed.filePath, /周计划\/2026-W29\.md$/);
   assert.equal(confirmed.confirmedAt, "2026-07-13T07:00:00+08:00");
   assert.deepEqual((await repo.read("2026-W29")).tasks, plan.tasks);
+  const repeated = await repo.confirm({
+    weekId: "2026-W29", version: 1, expectedHash: draft.contentHash,
+  });
+  assert.equal(repeated.contentHash, confirmed.contentHash);
 });
 
 test("rejects confirmation after the weekly plan changed", async () => {
@@ -52,30 +58,11 @@ test("rejects confirmation after the weekly plan changed", async () => {
   }), /weekly plan changed since read/);
 });
 
-test("does not overwrite a writer that recreates the plan after confirmation claims it", async () => {
-  const external = "external writer won\n";
-  let claimedPath;
+test("rejects a draft mutation before hash verification without publishing canonical", async () => {
+  const changed = "changed before verification\n";
   const repo = createWeeklyPlanRepository({
     kbDir: root,
-    afterConfirmClaim: async ({ filePath }) => {
-      claimedPath = filePath;
-      await fs.writeFile(filePath, external, { encoding: "utf8", flag: "wx" });
-    },
-  });
-  const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
-
-  await assert.rejects(() => repo.confirm({
-    weekId: "2026-W29", version: 1, expectedHash: draft.contentHash,
-  }), /weekly plan changed during confirmation/);
-  assert.equal(claimedPath, draft.filePath);
-  assert.equal(await fs.readFile(draft.filePath, "utf8"), external);
-});
-
-test("restores the claimed plan when the expected hash is stale", async () => {
-  const changed = "changed between read and claim\n";
-  const repo = createWeeklyPlanRepository({
-    kbDir: root,
-    beforeConfirmClaim: async ({ filePath }) => fs.writeFile(filePath, changed, "utf8"),
+    beforeDraftVerification: async ({ draftPath }) => fs.writeFile(draftPath, changed, "utf8"),
   });
   const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
 
@@ -83,6 +70,56 @@ test("restores the claimed plan when the expected hash is stale", async () => {
     weekId: "2026-W29", version: 1, expectedHash: draft.contentHash,
   }), /weekly plan changed since read/);
   assert.equal(await fs.readFile(draft.filePath, "utf8"), changed);
+  await assert.rejects(() => fs.access(path.join(root, "周计划", "2026-W29.md")), { code: "ENOENT" });
+});
+
+test("publishes approved bytes while preserving a later draft edit", async () => {
+  const changed = "changed after approved read\n";
+  const repo = createWeeklyPlanRepository({
+    kbDir: root,
+    afterApprovedDraftRead: async ({ draftPath }) => fs.writeFile(draftPath, changed, "utf8"),
+  });
+  const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
+  const confirmed = await repo.confirm({
+    weekId: "2026-W29", version: 1, expectedHash: draft.contentHash,
+  });
+
+  assert.equal(await fs.readFile(draft.filePath, "utf8"), changed);
+  assert.equal(confirmed.status, "confirmed");
+  assert.deepEqual(confirmed.tasks, plan.tasks);
+  assert.doesNotMatch(confirmed.rawContent, /changed after approved read/);
+});
+
+test("publishes only through an exclusive link without removing draft or canonical", async () => {
+  let observed = false;
+  const repo = createWeeklyPlanRepository({
+    kbDir: root,
+    beforeCanonicalLink: async ({ draftPath, canonicalPath, temporaryPath }) => {
+      assert.match(await fs.readFile(draftPath, "utf8"), /status: draft/);
+      await assert.rejects(() => fs.access(canonicalPath), { code: "ENOENT" });
+      assert.match(await fs.readFile(temporaryPath, "utf8"), /status: confirmed/);
+      observed = true;
+    },
+  });
+  const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
+  await repo.confirm({ weekId: "2026-W29", version: 1, expectedHash: draft.contentHash });
+
+  assert.equal(observed, true);
+  assert.match(await fs.readFile(draft.filePath, "utf8"), /status: draft/);
+  assert.match(await fs.readFile(path.join(root, "周计划", "2026-W29.md"), "utf8"), /status: confirmed/);
+});
+
+test("never mutates an existing different canonical plan", async () => {
+  const repo = createWeeklyPlanRepository({ kbDir: root });
+  const first = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
+  const confirmed = await repo.confirm({ weekId: "2026-W29", version: 1, expectedHash: first.contentHash });
+  const canonicalBytes = confirmed.rawContent;
+  const second = await repo.writeDraft({ weekId: "2026-W29", version: 2, plan: { ...plan, outcomes: ["不同成果"] } });
+
+  await assert.rejects(() => repo.confirm({
+    weekId: "2026-W29", version: 2, expectedHash: second.contentHash,
+  }), /confirmed weekly plan is immutable/);
+  assert.equal(await fs.readFile(confirmed.filePath, "utf8"), canonicalBytes);
 });
 
 test("reads and confirms a CRLF weekly plan", async () => {
@@ -90,7 +127,7 @@ test("reads and confirms a CRLF weekly plan", async () => {
   const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
   const crlf = draft.rawContent.replaceAll("\n", "\r\n");
   await fs.writeFile(draft.filePath, crlf, "utf8");
-  const reread = await repo.read("2026-W29");
+  const reread = await repo.read("2026-W29", 1);
 
   assert.deepEqual(reread.tasks, plan.tasks);
   const confirmed = await repo.confirm({
