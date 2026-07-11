@@ -79,6 +79,19 @@ ${END}
   return filePath;
 }
 
+async function mutateProject(transform) {
+  const filePath = await writeProject(root);
+  const content = await fs.readFile(filePath, "utf8");
+  await fs.writeFile(filePath, transform(content), "utf8");
+  return filePath;
+}
+
+function outsideManaged(content) {
+  const start = content.indexOf(START);
+  const end = content.indexOf(END) + END.length;
+  return Buffer.from(content.slice(0, start) + content.slice(end), "utf8");
+}
+
 test("reads structured projects and computes accepted weighted progress", async () => {
   await writeProject(root, { deliverableStatus: "accepted" });
   const repo = createProjectMarkdownRepository({ kbDir: root });
@@ -93,6 +106,58 @@ test("rejects weights that do not total one hundred", async () => {
   await writeProject(root, { milestoneWeight: 90 });
   const repo = createProjectMarkdownRepository({ kbDir: root });
   await assert.rejects(() => repo.readProject("personal-ip"), ProjectFormatError);
+});
+
+test("rejects duplicate milestone and deliverable IDs", async () => {
+  let filePath = await mutateProject((content) => content.replace(
+    "| content-validation | 验证内容方向 | 2026-07-31 | 100 | active |",
+    "| content-validation | 验证内容方向 | 2026-07-31 | 50 | active |\n| content-validation | 重复 | 2026-08-31 | 50 | pending |",
+  ));
+  await assert.rejects(() => createProjectMarkdownRepository({ kbDir: root }).readProject("personal-ip"), /duplicate milestone id/);
+  await fs.rm(filePath);
+
+  filePath = await mutateProject((content) => content.replace(
+    "| video-02 | content-validation | 发布其他短视频 | 90 | pending | |",
+    "| video-01 | content-validation | 发布其他短视频 | 90 | pending | |",
+  ));
+  await assert.rejects(() => createProjectMarkdownRepository({ kbDir: root }).readProject("personal-ip"), /duplicate deliverable id/);
+});
+
+test("rejects invalid project, milestone, and deliverable statuses", async () => {
+  for (const [from, to, expected] of [
+    ["status: active", "status: unknown", /invalid project status/],
+    ["100 | active |", "100 | unknown |", /invalid milestone status/],
+    ["10 | pending | |", "10 | unknown | |", /invalid deliverable status/],
+  ]) {
+    const filePath = await mutateProject((content) => content.replace(from, to));
+    await assert.rejects(() => createProjectMarkdownRepository({ kbDir: root }).readProject("personal-ip"), expected);
+    await fs.rm(filePath);
+  }
+});
+
+test("rejects missing, duplicate, and misordered managed markers", async () => {
+  for (const transform of [
+    (content) => content.replace(START, ""),
+    (content) => content.replace(START, `${START}\n${START}`),
+    (content) => content.replace(START, "PLACEHOLDER").replace(END, START).replace("PLACEHOLDER", END),
+  ]) {
+    const filePath = await mutateProject(transform);
+    await assert.rejects(() => createProjectMarkdownRepository({ kbDir: root }).readProject("personal-ip"), ProjectFormatError);
+    await fs.rm(filePath);
+  }
+});
+
+test("rejects deliverables that reference an unknown milestone", async () => {
+  await mutateProject((content) => content.replace("| video-01 | content-validation |", "| video-01 | missing-milestone |"));
+  await assert.rejects(() => createProjectMarkdownRepository({ kbDir: root }).readProject("personal-ip"), /unknown milestone id/);
+});
+
+test("rejects deliverable weights that do not total one hundred", async () => {
+  await mutateProject((content) => content.replace(
+    "| video-02 | content-validation | 发布其他短视频 | 90 |",
+    "| video-02 | content-validation | 发布其他短视频 | 80 |",
+  ));
+  await assert.rejects(() => createProjectMarkdownRepository({ kbDir: root }).readProject("personal-ip"), /deliverable weights.*must total 100/);
 });
 
 test("lists valid project markdown files", async () => {
@@ -124,19 +189,69 @@ test("confirms a draft after checking its hash", async () => {
   const confirmed = await repo.confirmDraft("personal-ip", draft.contentHash);
   assert.equal(confirmed.status, "active");
   assert.equal(confirmed.updatedAt, draft.updatedAt);
-  assert.match(await fs.readFile(confirmed.filePath, "utf8"), /status: active/);
+  assert.equal(
+    await fs.readFile(confirmed.filePath, "utf8"),
+    draft.rawContent.replace(/^status: draft$/m, "status: active"),
+  );
+});
+
+test("applies deliverable add, update, and remove changes", async () => {
+  await writeProject(root);
+  let changeSequence = 0;
+  const repo = createProjectMarkdownRepository({ kbDir: root, id: () => `change-${changeSequence += 1}` });
+  let project = await repo.readProject("personal-ip");
+
+  project = await repo.applyDeliverableChanges({
+    projectId: project.id,
+    expectedHash: project.contentHash,
+    changes: [
+      { action: "update", milestoneId: "content-validation", deliverableId: "video-02", weight: 70 },
+      { action: "add", milestoneId: "content-validation", deliverableId: "video-03", name: "发布第 3 条短视频", weight: 20 },
+    ],
+  });
+  assert.deepEqual(
+    project.milestones[0].deliverables.map(({ id, weight }) => [id, weight]),
+    [["video-01", 10], ["video-02", 70], ["video-03", 20]],
+  );
+
+  project = await repo.applyDeliverableChanges({
+    projectId: project.id,
+    expectedHash: project.contentHash,
+    changes: [
+      { action: "update", milestoneId: "content-validation", deliverableId: "video-01", name: "发布首条短视频", weight: 20 },
+      { action: "update", milestoneId: "content-validation", deliverableId: "video-02", weight: 60 },
+    ],
+  });
+  assert.deepEqual(
+    project.milestones[0].deliverables.map(({ id, name, weight }) => [id, name, weight]),
+    [["video-01", "发布首条短视频", 20], ["video-02", "发布其他短视频", 60], ["video-03", "发布第 3 条短视频", 20]],
+  );
+
+  project = await repo.applyDeliverableChanges({
+    projectId: project.id,
+    expectedHash: project.contentHash,
+    changes: [
+      { action: "update", milestoneId: "content-validation", deliverableId: "video-02", weight: 80 },
+      { action: "remove", milestoneId: "content-validation", deliverableId: "video-03" },
+    ],
+  });
+  assert.deepEqual(
+    project.milestones[0].deliverables.map(({ id, weight }) => [id, weight]),
+    [["video-01", 20], ["video-02", 80]],
+  );
 });
 
 test("accepts a deliverable without changing free notes", async () => {
   await writeProject(root);
   const repo = createProjectMarkdownRepository({ kbDir: root, now: () => "2026-07-12T10:20:30+08:00", id: () => "change-1" });
   const before = await repo.readProject("personal-ip");
+  const outsideBefore = outsideManaged(before.rawContent);
   const result = await repo.acceptDeliverable({
     projectId: "personal-ip", deliverableId: "video-01",
     evidence: "https://example.com/v/1", expectedHash: before.contentHash,
   });
   assert.equal(result.projectProgress, 10);
-  assert.match(await fs.readFile(before.filePath, "utf8"), /我的自由笔记\n不要修改/);
+  assert.deepEqual(outsideManaged(await fs.readFile(before.filePath, "utf8")), outsideBefore);
   const logs = await fs.readdir(path.join(root, "项目变更记录"));
   assert.equal(logs.length, 1);
   assert.match(await fs.readFile(path.join(root, "项目变更记录", logs[0]), "utf8"), /https:\/\/example\.com\/v\/1/);
