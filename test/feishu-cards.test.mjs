@@ -26,6 +26,19 @@ test("current task card exposes four actions with task id", () => {
   assert.ok(buttons.every((button) => button.behaviors[0].value.taskId === "task-1"));
 });
 
+test("current task card exposes incomplete checkpoints as individual actions", () => {
+  const card = renderCurrentTaskCard({
+    task: { ...task, checkpoints: [{ title: "写脚本", completed: true }, { title: "录制素材", completed: false }] },
+    startsAt: "10:00",
+    endsAt: "12:00",
+  });
+  const buttons = card.body.elements.filter((element) => element.tag === "button");
+  const checkpoint = buttons.find((button) => button.behaviors[0].value.action === "complete_checkpoint");
+  assert.equal(checkpoint.text.content, "○ 录制素材");
+  assert.deepEqual(checkpoint.behaviors[0].value, { action: "complete_checkpoint", taskId: "task-1", checkpointIndex: 1 });
+  assert.match(JSON.stringify(card), /✓ 写脚本/);
+});
+
 test("renders plan, intervention, and review cards with factual content", () => {
   const plan = renderDailyPlanCard({ date: "2026-07-10", blocks: [{ ...task, startsAt: "10:00", endsAt: "12:00", reason: "个人IP阶段优先" }] });
   const intervention = renderInterventionCard({ task, minimumAction: "打开相机说完第一遍", minutes: 15 });

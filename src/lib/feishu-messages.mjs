@@ -35,6 +35,7 @@ export function normalizeManagerAction(input) {
   return {
     action: value.action,
     taskId: value.taskId || "",
+    ...(value.checkpointIndex === undefined ? {} : { checkpointIndex: value.checkpointIndex }),
     query: value.query || "",
     detail: value.detail || "",
     idempotencyKey: input.eventId ? `card:${input.eventId}` : "",
