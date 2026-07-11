@@ -106,6 +106,17 @@ test("completes one checkpoint without completing the parent task", async () => 
   db.close();
 });
 
+test("requires a reason before deferring a task", async () => {
+  const { db, tasks, ops, manager } = setup();
+  const task = tasks.create({ id: "task-defer", rawInput: "拍视频", status: "doing" });
+  const result = await manager.handleAction({ action: "defer_30", taskId: task.id, idempotencyKey: "message:defer-1" });
+
+  assert.equal(result.action, "defer_reason_required");
+  assert.equal(tasks.findById(task.id).status, "doing");
+  assert.match(ops.listOutbox().at(-1).payload.text, /说明推迟原因/);
+  db.close();
+});
+
 test("does not start a second task while one is doing", async () => {
   const { db, tasks, ops, manager } = setup();
   tasks.create({ id: "current", rawInput: "当前任务", status: "doing" });

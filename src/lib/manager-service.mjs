@@ -137,6 +137,15 @@ export function createManagerService(deps) {
       }
     }
 
+    if (input.action === "defer_30" && !String(input.detail || "").trim()) {
+      ops.enqueueOutbox({
+        kind: "status_message",
+        payload: { text: `请说明推迟原因，再执行推迟：\n推迟30分钟：${task.title}｜原因`, taskId: task.id },
+        idempotencyKey: input.idempotencyKey ? `outbox:${input.idempotencyKey}` : `defer-reason:${task.id}:${Date.now()}`,
+      });
+      return { action: "defer_reason_required", task };
+    }
+
     const detail = input.action === "block"
       ? extractBlocker(input.detail || input.query || "", task.title)
       : input.detail || "";

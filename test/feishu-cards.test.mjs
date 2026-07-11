@@ -59,6 +59,9 @@ test("normalizes card buttons and text commands into the same actions", () => {
   assert.equal(normalizeManagerAction("完成：拍视频").action, "complete");
   assert.equal(normalizeManagerAction("卡住：拍视频 不知道怎么开头").action, "block");
   assert.equal(normalizeManagerAction("推迟30分钟：拍视频").action, "defer_30");
+  assert.deepEqual(normalizeManagerAction("推迟30分钟：拍视频｜客户临时电话"), {
+    action: "defer_30", taskId: "", query: "拍视频", detail: "客户临时电话", idempotencyKey: "",
+  });
   assert.equal(normalizeManagerAction("恢复：拍视频").action, "restore");
 });
 

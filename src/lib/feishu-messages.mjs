@@ -21,6 +21,10 @@ export function extractCardAction(input = {}) {
 export function normalizeManagerAction(input) {
   if (typeof input === "string") {
     const text = input.trim();
+    const deferWithReason = text.match(/^推迟\s*30\s*分钟[:：]\s*(.+?)\s*[｜|]\s*(.+)$/);
+    if (deferWithReason) {
+      return { action: "defer_30", taskId: "", query: deferWithReason[1].trim(), detail: deferWithReason[2].trim(), idempotencyKey: "" };
+    }
     for (const [pattern, action] of TEXT_ACTIONS) {
       const match = text.match(pattern);
       if (!match) continue;
