@@ -18,7 +18,10 @@ const task = {
 
 test("current task card exposes four actions with task id", () => {
   const card = renderCurrentTaskCard({ task, startsAt: "10:00", endsAt: "12:00" });
-  const buttons = card.body.elements.filter((element) => element.tag === "button");
+  const row = card.body.elements.find((element) => element.tag === "column_set");
+  const buttons = row.columns.flatMap((column) => column.elements);
+  assert.equal(row.flex_mode, "flow");
+  assert.equal(row.columns.length, 4);
   assert.deepEqual(
     buttons.map((button) => button.behaviors[0].value.action),
     ["start", "complete", "block", "defer_30"],

@@ -26,10 +26,12 @@ export function renderCurrentTaskCard({ task, startsAt, endsAt }) {
     ...checkpoints.map((checkpoint, index) => checkpoint.completed
       ? markdown(`✓ ${checkpoint.title}`)
       : button(`○ ${checkpoint.title}`, "complete_checkpoint", task.id, "default", { checkpointIndex: index })),
-    button("▶ 开始", "start", task.id, "primary"),
-    button("✓ 完成", "complete", task.id, "primary"),
-    button("! 卡住", "block", task.id, "danger"),
-    button("＋ 推迟 30 分钟", "defer_30", task.id, "default"),
+    buttonRow([
+      button("▶ 开始", "start", task.id, "primary"),
+      button("✓ 完成", "complete", task.id, "primary"),
+      button("! 卡住", "block", task.id, "danger"),
+      button("＋ 推迟 30 分钟", "defer_30", task.id, "default"),
+    ]),
   ]);
 }
 
@@ -76,6 +78,22 @@ function card(title, template, elements) {
 
 function markdown(content) {
   return { tag: "markdown", content };
+}
+
+function buttonRow(buttons) {
+  return {
+    tag: "column_set",
+    flex_mode: "flow",
+    horizontal_spacing: "small",
+    horizontal_align: "left",
+    columns: buttons.map((item) => ({
+      tag: "column",
+      width: "weighted",
+      weight: 1,
+      vertical_align: "center",
+      elements: [item],
+    })),
+  };
 }
 
 function button(content, action, taskId, type, extraValue = {}) {
