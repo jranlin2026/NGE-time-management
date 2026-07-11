@@ -4,7 +4,7 @@ const ACTIVE_STATUSES = new Set(["inbox", "open", "ready", "scheduled", "doing",
 
 export function buildDailySchedule({ date, now, tasks, settings }) {
   const nowDate = new Date(now);
-  const maxCriticalTasks = Number(settings.maxCriticalTasks || 3);
+  const maxCriticalTasks = normalizedMaxCriticalTasks(settings.maxCriticalTasks);
   const ranked = tasks
     .filter((task) => ACTIVE_STATUSES.has(task.status || "ready"))
     .map((task) => {
@@ -70,7 +70,17 @@ export function buildDailySchedule({ date, now, tasks, settings }) {
 function orderRankedTasks(ranked, projectMinimums) {
   const selected = [];
   const selectedIds = new Set();
-  for (const [project, minimum] of Object.entries(projectMinimums)) {
+  for (const item of ranked) {
+    if (item.task.project !== "极享OS" || item.task.impact !== "system_unusable_bug") continue;
+    selected.push(item);
+    selectedIds.add(item.task.id);
+  }
+  const minimumEntries = Object.entries(projectMinimums).sort(([left], [right]) => {
+    if (left === "个人IP") return -1;
+    if (right === "个人IP") return 1;
+    return 0;
+  });
+  for (const [project, minimum] of minimumEntries) {
     for (const item of ranked) {
       if (item.task.project !== project || selectedIds.has(item.task.id)) continue;
       selected.push(item);
@@ -113,7 +123,7 @@ export function replanRemaining({ schedule, now, tasks, settings }) {
   ).toISOString();
   const remainingLimit = Math.max(
     0,
-    Number(settings.maxCriticalTasks || 3) - 1 + (remainingCurrentMinutes > 0 ? 1 : 0),
+    normalizedMaxCriticalTasks(settings.maxCriticalTasks) - 1 + (remainingCurrentMinutes > 0 ? 1 : 0),
   );
   const replanned = buildDailySchedule({
     date: schedule.date,
@@ -128,11 +138,19 @@ export function replanRemaining({ schedule, now, tasks, settings }) {
       ),
     },
   });
+  const blocks = [current, ...replanned.blocks];
   return {
     ...replanned,
-    blocks: [current, ...replanned.blocks],
+    blocks,
     deferred: [...new Set(replanned.deferred)],
+    capacityWarnings: capacityWarningsFor({ blocks, tasks, settings }),
   };
+}
+
+function normalizedMaxCriticalTasks(value) {
+  const parsed = Number(value ?? 3);
+  if (!Number.isFinite(parsed)) return 3;
+  return Math.min(5, Math.max(0, Math.trunc(parsed)));
 }
 
 function blockMinutes(sum, block) {

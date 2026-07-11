@@ -224,6 +224,66 @@ test("warns when project minimum work cannot fit without exceeding capacity", ()
   assert.match(schedule.capacityWarnings[0], /个人IP/);
 });
 
+test("clamps configured critical tasks to five in initial builds and replans", () => {
+  const oversizedSettings = {
+    timezone: "Asia/Shanghai", windows: [["10:00", "24:00"]], capacityRatio: 1,
+    maxCriticalTasks: 99, projectMinimums: {},
+  };
+  const tasks = Array.from({ length: 8 }, (_, index) => task(`task-${index}`, "行政", 30));
+  const initial = buildDailySchedule({
+    date: "2026-07-13", now: "2026-07-13T00:00:00.000Z", tasks, settings: oversizedSettings,
+  });
+  assert.equal(new Set(initial.blocks.map((block) => block.taskId)).size, 5);
+
+  const current = { ...initial.blocks[0], status: "doing" };
+  const replanned = replanRemaining({
+    schedule: { ...initial, blocks: [current] },
+    now: "2026-07-13T02:15:00.000Z",
+    tasks: tasks.map((item) => item.id === current.taskId ? { ...item, status: "doing" } : item),
+    settings: oversizedSettings,
+  });
+  assert.equal(new Set(replanned.blocks.map((block) => block.taskId)).size, 5);
+});
+
+test("preserved current work satisfies project minimum warnings and counts toward capacity", () => {
+  const settings = {
+    timezone: "Asia/Shanghai", windows: [["10:00", "18:00"]], capacityRatio: 0.7,
+    maxCriticalTasks: 5, projectMinimums: { "个人IP": 2 }, projectMinimumMinutes: 60,
+  };
+  const currentTask = task("current-ip", "个人IP", 120);
+  const current = {
+    taskId: currentTask.id, startsAt: "2026-07-13T02:00:00.000Z", endsAt: "2026-07-13T04:00:00.000Z",
+    status: "doing", reason: "正在执行",
+  };
+  const replanned = replanRemaining({
+    schedule: { date: "2026-07-13", blocks: [current] },
+    now: "2026-07-13T02:15:00.000Z",
+    tasks: [currentTask, task("os-long", "极享OS", 300)],
+    settings,
+  });
+  const minutes = replanned.blocks.reduce((sum, block) =>
+    sum + (new Date(block.endsAt) - new Date(block.startsAt)) / 60_000, 0);
+  assert.equal(replanned.capacityWarnings.some((warning) => warning.includes("个人IP")), false);
+  assert.ok(minutes <= 480 * 0.7);
+});
+
+test("project minimum key order cannot promote normal OS work over personal IP", () => {
+  const settings = {
+    timezone: "Asia/Shanghai", windows: [["10:00", "18:00"]], capacityRatio: 0.7,
+    maxCriticalTasks: 5, projectMinimums: { "极享OS": 2, "个人IP": 2 }, projectMinimumMinutes: 60,
+  };
+  const ip = task("ip", "个人IP", 60);
+  const normalOs = task("normal-os", "极享OS", 60);
+  const unusableOs = { ...task("unusable-os", "极享OS", 60), impact: "system_unusable_bug" };
+
+  assert.equal(buildDailySchedule({
+    date: "2026-07-13", now: "2026-07-13T00:00:00.000Z", tasks: [normalOs, ip], settings,
+  }).blocks[0].taskId, ip.id);
+  assert.equal(buildDailySchedule({
+    date: "2026-07-13", now: "2026-07-13T00:00:00.000Z", tasks: [ip, unusableOs], settings,
+  }).blocks[0].taskId, unusableOs.id);
+});
+
 function task(id, project, estimateMinutes) {
   return {
     id,
