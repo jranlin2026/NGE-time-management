@@ -225,7 +225,17 @@ function validateWeeklyPlan(value, projects) {
     if (!project) throw new Error(`unknown deliverable change project: ${change.projectId}`);
     const milestone = project.milestones?.find((item) => item.id === change.milestoneId);
     if (!milestone) throw new Error(`unknown deliverable change milestone: ${change.milestoneId}`);
-    const existing = milestone.deliverables?.some((item) => item.id === change.deliverableId);
+    const current = milestone.deliverables?.find((item) => item.id === change.deliverableId);
+    const existing = Boolean(current);
+    if (current?.status === "accepted") {
+      throw new Error(`weekly plan cannot change accepted deliverable: ${change.deliverableId}`);
+    }
+    if (change.action === "add" && (change.status !== "pending" || ("evidence" in change && change.evidence !== ""))) {
+      throw new Error("new deliverable must be pending with empty evidence");
+    }
+    if (change.status === "accepted" || ("evidence" in change && change.evidence !== "")) {
+      throw new Error("weekly plan cannot set accepted status or evidence");
+    }
     if (change.action !== "add" && !existing) {
       throw new Error(`unknown deliverable change deliverable: ${change.deliverableId}`);
     }

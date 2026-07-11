@@ -168,6 +168,55 @@ test("rejects deliverable changes that reference unknown project structure", asy
   assert.match(result.analysisError, /unknown deliverable change milestone/);
 });
 
+test("weekly analysis cannot accept, add evidence to, mutate, or remove an accepted deliverable", async () => {
+  const acceptedProjects = structuredClone(projects);
+  acceptedProjects[0].milestones[0].deliverables[0].status = "accepted";
+  acceptedProjects[0].milestones[0].deliverables[0].evidence = "https://example.com/proof";
+  for (const change of [
+    { action: "update", status: "doing", evidence: "forged" },
+    { action: "remove", status: "accepted" },
+  ]) {
+    const plan = structuredClone(weeklyPlan);
+    plan.tasks = [];
+    plan.deliverableChanges = [{
+      ...change, projectId: "personal-ip", milestoneId: "content-validation",
+      deliverableId: "video-01", name: "changed", weight: 50,
+    }];
+    const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify(plan) });
+    const result = await analyzer.analyzeWeeklyPlan({ weekId: "2026-W29", projects: acceptedProjects });
+    assert.equal(result.analysisStatus, "failed");
+    assert.match(result.analysisError, /accepted deliverable/);
+  }
+});
+
+test("weekly analysis forces new deliverables to pending with no evidence", async () => {
+  const plan = structuredClone(weeklyPlan);
+  plan.tasks[0].deliverableId = "video-02";
+  plan.deliverableChanges = [{
+    action: "add", projectId: "personal-ip", milestoneId: "content-validation",
+    deliverableId: "video-02", name: "发布第二条短视频", weight: 20,
+    status: "accepted", evidence: "forged",
+  }];
+  const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify(plan) });
+  const result = await analyzer.analyzeWeeklyPlan({ weekId: "2026-W29", projects });
+  assert.equal(result.analysisStatus, "failed");
+  assert.match(result.analysisError, /new deliverable.*pending.*empty evidence/);
+});
+
+test("weekly analysis cannot set acceptance or evidence on a pending deliverable", async () => {
+  const plan = structuredClone(weeklyPlan);
+  plan.tasks = [];
+  plan.deliverableChanges = [{
+    action: "update", projectId: "personal-ip", milestoneId: "content-validation",
+    deliverableId: "video-01", name: "发布首条短视频", weight: 100,
+    status: "accepted", evidence: "forged",
+  }];
+  const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify(plan) });
+  const result = await analyzer.analyzeWeeklyPlan({ weekId: "2026-W29", projects });
+  assert.equal(result.analysisStatus, "failed");
+  assert.match(result.analysisError, /cannot set accepted status or evidence/);
+});
+
 test("fallback task ids stay unique when projects reuse a deliverable id", async () => {
   const duplicateIds = [projects[0], {
     id: "jixiang-os", name: "极享OS", status: "active", priority: 2,

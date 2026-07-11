@@ -459,6 +459,15 @@ export function createProjectMarkdownRepository(deps) {
         const milestone = project.milestones.find((item) => item.id === change.milestoneId);
         if (!milestone) throw new Error(`milestone not found: ${change.milestoneId}`);
         const index = milestone.deliverables.findIndex((item) => item.id === (change.deliverableId ?? change.id));
+        if (index >= 0 && milestone.deliverables[index].status === "accepted") {
+          throw new Error(`weekly plan cannot change accepted deliverable: ${milestone.deliverables[index].id}`);
+        }
+        if (index < 0 && (change.status !== undefined && change.status !== "pending" || (change.evidence ?? "") !== "")) {
+          throw new Error("new deliverable must be pending with empty evidence");
+        }
+        if (change.status === "accepted" || (change.evidence ?? "") !== "") {
+          throw new Error("weekly plan cannot set accepted status or evidence");
+        }
         if (change.action === "remove") {
           if (index >= 0) milestone.deliverables.splice(index, 1);
         } else if (index >= 0) {
@@ -466,7 +475,7 @@ export function createProjectMarkdownRepository(deps) {
         } else {
           milestone.deliverables.push({
             id: change.deliverableId ?? change.id, milestoneId: milestone.id, name: change.name,
-            weight: change.weight, status: change.status ?? "pending", evidence: change.evidence ?? "",
+            weight: change.weight, status: "pending", evidence: "",
           });
         }
       }

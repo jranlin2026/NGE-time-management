@@ -121,7 +121,7 @@ export function createManagerApp(config, deps = {}) {
         });
       },
       weekly_plan: (reminder) => weeklyPlanning.generateDraft({
-        weekId: isoWeekId(localDate(new Date(reminder.dueAt), settings.timezone)),
+        weekId: upcomingWeekIdForSunday(localDate(new Date(reminder.dueAt), settings.timezone)),
       }),
       midday: (reminder) => manager.runMiddayCheck({
         date: localDate(new Date(reminder.dueAt), settings.timezone),
@@ -291,6 +291,9 @@ export function createMessageHandler({ config, manager, ops, weeklyPlanning }) {
     if (!message.text) return;
     const action = normalizeManagerAction(message.text);
     if (action?.action === "adjust_weekly_plan") {
+      if (config.managerUserId && message.senderId !== config.managerUserId) {
+        return { ignored: true, reason: "different_user" };
+      }
       const pending = ops.getSetting("pending_weekly_adjustment");
       if (!pending) throw new Error("no weekly plan is awaiting adjustment");
       await weeklyPlanning.requestAdjustment({
@@ -314,6 +317,10 @@ export function createMessageHandler({ config, manager, ops, weeklyPlanning }) {
 
 export function createCardActionHandler({ config = {}, manager, projectRepo, weeklyPlanning, ops }) {
   return async function handleCardAction(action) {
+    if (["confirm_project_setup", "confirm_weekly_plan", "adjust_weekly_plan"].includes(action.action)
+      && config.managerUserId && action.actorId !== config.managerUserId) {
+      return { toast: { type: "error", content: "无权执行计划操作" }, ignored: true, reason: "different_user" };
+    }
     if (["accept_evidence", "reject_evidence"].includes(action.action)) {
       if (config.managerUserId && action.actorId !== config.managerUserId) {
         return { toast: { type: "error", content: "无权执行验收操作" }, ignored: true, reason: "different_user" };
@@ -393,7 +400,7 @@ export function seedFixedReminders({ now, config, settings, ops }) {
   for (let offset = 0; offset < 28; offset += 7) {
     const date = addDays(firstSunday, offset);
     const dueAt = zonedDateTimeToUtc(date, config.schedule.weeklyPlan || "22:00", settings.timezone);
-    const weekId = isoWeekId(date);
+    const weekId = upcomingWeekIdForSunday(date);
     ops.enqueueReminder({
       kind: "weekly_plan",
       dueAt: dueAt.toISOString(),
@@ -401,6 +408,10 @@ export function seedFixedReminders({ now, config, settings, ops }) {
       idempotencyKey: `fixed:weekly-plan:${weekId}`,
     });
   }
+}
+
+export function upcomingWeekIdForSunday(date) {
+  return isoWeekId(addDays(date, 1));
 }
 
 async function deliverOutbox(config, row, { tasks, ops, settings }) {
@@ -513,7 +524,7 @@ function loadManagerSettings(config, ops) {
     ],
     maxCriticalTasks: 5,
     capacityRatio: Number(config.capacityRatio ?? 0.7),
-    projectMinimumMinutes: 60,
+    projectMinimumMinutes: 120,
     noResponseMinutes: config.schedule.noResponseMinutes || 15,
     projectMinimums: { "个人IP": 2, "极享OS": 2 },
     projectWindows: {

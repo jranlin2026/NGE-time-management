@@ -213,7 +213,7 @@ test("warns when project minimum work cannot fit without exceeding capacity", ()
     now: "2026-07-13T00:00:00.000Z",
     settings: {
       timezone: "Asia/Shanghai", windows: [["10:00", "11:00"]], capacityRatio: 0.7,
-      maxCriticalTasks: 5, projectMinimums: { "个人IP": 2 }, projectMinimumMinutes: 60,
+      maxCriticalTasks: 5, projectMinimums: { "个人IP": 2 }, projectMinimumMinutes: 120,
     },
     tasks: [task("ip-1", "个人IP", 60), task("ip-2", "个人IP", 60)],
   });
@@ -222,6 +222,19 @@ test("warns when project minimum work cannot fit without exceeding capacity", ()
   assert.equal(minutes, 42);
   assert.equal(schedule.capacityWarnings.length, 1);
   assert.match(schedule.capacityWarnings[0], /个人IP/);
+});
+
+test("best effort satisfies two tasks and 120 total minutes per project when feasible", () => {
+  const schedule = buildDailySchedule({
+    date: "2026-07-13", now: "2026-07-13T00:00:00.000Z",
+    settings: { timezone: "Asia/Shanghai", windows: [["10:00", "18:00"]], capacityRatio: 0.7,
+      maxCriticalTasks: 5, projectMinimums: { "个人IP": 2, "极享OS": 2 }, projectMinimumMinutes: 120 },
+    tasks: [task("ip-1", "个人IP", 30), task("ip-2", "个人IP", 90), task("os-1", "极享OS", 60), task("os-2", "极享OS", 60), task("admin", "行政", 120)],
+  });
+  const ids = new Set(schedule.blocks.map((block) => block.taskId));
+  assert.equal([...ids].filter((id) => id.startsWith("ip-")).length, 2);
+  assert.equal([...ids].filter((id) => id.startsWith("os-")).length, 2);
+  assert.deepEqual(schedule.capacityWarnings, []);
 });
 
 test("clamps configured critical tasks to five in initial builds and replans", () => {
@@ -245,7 +258,7 @@ test("clamps configured critical tasks to five in initial builds and replans", (
   assert.equal(new Set(replanned.blocks.map((block) => block.taskId)).size, 5);
 });
 
-test("preserved current work satisfies project minimum warnings and counts toward capacity", () => {
+test("preserved current work counts toward capacity but one task still warns on a two-task minimum", () => {
   const settings = {
     timezone: "Asia/Shanghai", windows: [["10:00", "18:00"]], capacityRatio: 0.7,
     maxCriticalTasks: 5, projectMinimums: { "个人IP": 2 }, projectMinimumMinutes: 60,
@@ -263,7 +276,7 @@ test("preserved current work satisfies project minimum warnings and counts towar
   });
   const minutes = replanned.blocks.reduce((sum, block) =>
     sum + (new Date(block.endsAt) - new Date(block.startsAt)) / 60_000, 0);
-  assert.equal(replanned.capacityWarnings.some((warning) => warning.includes("个人IP")), false);
+  assert.equal(replanned.capacityWarnings.some((warning) => warning.includes("个人IP")), true);
   assert.ok(minutes <= 480 * 0.7);
 });
 

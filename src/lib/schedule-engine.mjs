@@ -172,13 +172,17 @@ function capacityWarningsFor({ blocks, tasks, settings }) {
   if (minimumMinutes <= 0) return [];
   const projectByTaskId = new Map(tasks.map((task) => [task.id, task.project]));
   const scheduledMinutes = new Map();
+  const scheduledTasks = new Map();
   for (const block of blocks) {
     const project = projectByTaskId.get(block.taskId);
     scheduledMinutes.set(project, (scheduledMinutes.get(project) || 0) + blockMinutes(0, block));
+    if (!scheduledTasks.has(project)) scheduledTasks.set(project, new Set());
+    scheduledTasks.get(project).add(block.taskId);
   }
   return Object.entries(settings.projectMinimums || {})
-    .filter(([project, count]) => (scheduledMinutes.get(project) || 0) < Number(count) * minimumMinutes)
-    .map(([project, count]) => `${project} 最低容量 ${Number(count) * minimumMinutes} 分钟无法在容量上限内排入`);
+    .filter(([project, count]) => (scheduledTasks.get(project)?.size || 0) < Number(count)
+      || (scheduledMinutes.get(project) || 0) < minimumMinutes)
+    .map(([project, count]) => `${project} 最低要求 ${Number(count)} 个任务且共 ${minimumMinutes} 分钟无法在容量上限内排入`);
 }
 
 function buildWindows(date, definitions, timezone, now) {

@@ -3,7 +3,7 @@ import test from "node:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createCardActionHandler, createManagerApp, createMessageHandler, renderCardActionResponse, seedFixedReminders } from "../src/manager-app.mjs";
+import { createCardActionHandler, createManagerApp, createMessageHandler, renderCardActionResponse, seedFixedReminders, upcomingWeekIdForSunday } from "../src/manager-app.mjs";
 import { openDatabase } from "../src/db/database.mjs";
 import { createOperationsRepository } from "../src/db/operations-repository.mjs";
 
@@ -22,8 +22,45 @@ test("seeds four idempotent Sunday weekly-plan reminders in the configured timez
   const weekly = ops.listReminders({ status: "pending" }).filter((item) => item.kind === "weekly_plan");
   assert.equal(weekly.length, 4);
   assert.equal(weekly[0].dueAt, "2026-07-12T14:00:00.000Z");
-  assert.equal(weekly[0].idempotencyKey, "fixed:weekly-plan:2026-W28");
+  assert.equal(weekly[0].idempotencyKey, "fixed:weekly-plan:2026-W29");
   db.close();
+});
+
+test("Sunday weekly identity targets the upcoming Monday across year rollover", () => {
+  assert.equal(upcomingWeekIdForSunday("2026-07-12"), "2026-W29");
+  assert.equal(upcomingWeekIdForSunday("2027-01-03"), "2027-W01");
+});
+
+test("project and weekly callbacks require the configured card operator", async () => {
+  let mutations = 0;
+  const callback = createCardActionHandler({
+    config: { managerUserId: "owner" },
+    manager: { handleAction: async () => ({}) },
+    ops: { setSetting: () => { mutations += 1; } },
+    projectRepo: { confirmDraft: async () => { mutations += 1; } },
+    weeklyPlanning: { confirm: async () => { mutations += 1; }, requestAdjustment: async () => { mutations += 1; } },
+  });
+  for (const action of ["confirm_project_setup", "confirm_weekly_plan", "adjust_weekly_plan"]) {
+    for (const actorId of [undefined, "intruder"]) {
+      const result = await callback({ action, actorId, projects: [], weekId: "2026-W29", version: 1 });
+      assert.equal(result.ignored, true);
+    }
+  }
+  assert.equal(mutations, 0);
+});
+
+test("weekly adjustment follow-up text requires the manager sender", async () => {
+  const settings = new Map([["pending_weekly_adjustment", { weekId: "2026-W29", version: 1 }]]);
+  let adjustments = 0;
+  const handler = createMessageHandler({
+    config: { managerUserId: "owner", feishuReceiveId: "owner", feishuReceiveIdType: "open_id" },
+    ops: { getSetting: (key) => settings.get(key), setSetting: (key, value) => settings.set(key, value) },
+    manager: { handleAction: async () => {} },
+    weeklyPlanning: { requestAdjustment: async () => { adjustments += 1; } },
+  });
+  assert.deepEqual(await handler({ kind: "message", text: "调整周计划｜删掉任务", senderId: "intruder", messageId: "bad" }), { ignored: true, reason: "different_user" });
+  assert.equal(adjustments, 0);
+  assert.deepEqual(settings.get("pending_weekly_adjustment"), { weekId: "2026-W29", version: 1 });
 });
 
 test("weekly-plan reminder follows local Sunday time across daylight-saving changes", () => {
@@ -205,7 +242,7 @@ test("Sunday reminder generates the matching ISO-week draft through the composed
   await app.start();
   now = new Date("2026-07-12T14:01:00.000Z");
   await app.state.reminderEngine.processDue();
-  assert.deepEqual(generated, [{ weekId: "2026-W28" }]);
+  assert.deepEqual(generated, [{ weekId: "2026-W29" }]);
   await app.stop();
 });
 

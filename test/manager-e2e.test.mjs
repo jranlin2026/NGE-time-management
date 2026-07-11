@@ -10,9 +10,10 @@ import { buildDailyReview } from "../src/lib/daily-review.mjs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createManagerApp } from "../src/manager-app.mjs";
+import { createManagerApp, seedFixedReminders } from "../src/manager-app.mjs";
+import { createCodexAnalyzer } from "../src/lib/codex-analyzer.mjs";
 
-test("composed app runs weekly plan through evidence acceptance and project progress", async () => {
+test("Sunday reminder runs analyzer through canonical weekly confirmation into Monday materialization", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "manager-loop-e2e-"));
   await fs.mkdir(path.join(root, "项目"), { recursive: true });
   await fs.writeFile(path.join(root, "项目", "个人IP.md"), `---
@@ -56,25 +57,41 @@ updated_at: 2026-07-12T08:00:00+08:00
 尚无。
 <!-- time-manager:managed:end -->
 `, "utf8");
-  const analyzer = {
-    analyzeWeeklyPlan: async ({ weekId }) => ({ weekId, outcomes: ["发布首条短视频"], deliverableChanges: [], tasks: [{
+  let now = new Date("2026-07-12T13:59:00.000Z");
+  const analyzer = createCodexAnalyzer({}, { run: async ({ mode }) => JSON.stringify(mode === "weekly_plan" ? {
+    outcomes: ["发布首条短视频"], deliverableChanges: [], tasks: [{
       taskId: "publish-video-01", projectId: "personal-ip", projectName: "个人IP",
       milestoneId: "content-validation", deliverableId: "video-01", deliverable: "发布首条短视频",
-      title: "发布首条短视频", suggestedDate: "2026-07-13", requiresEvidence: true,
-      impact: "high", minutes: 90, date: "2026-07-13", completionStandard: "公开视频上线",
-    }] }),
-    analyzeAcceptance: async () => ({ status: "accepted", explanation: "链接证据有效" }),
-  };
-  const app = createManagerApp({
+      title: "发布首条短视频", requiresEvidence: true, impact: "normal", minutes: 90,
+      date: "2026-07-13", completionStandard: "公开视频上线",
+    }],
+  } : { status: "accepted", explanation: "链接证据有效" }) });
+  const config = {
     dbPath: ":memory:", dataDir: root, kbDir: root, backupDir: path.join(root, "backups"), markdownExportDir: path.join(root, "exports"),
     timezone: "Asia/Shanghai", feishuReceiveId: "owner", managerUserId: "owner", capacityRatio: 0.7,
     schedule: { weeklyPlan: "22:00", plan: "08:00", firstTask: "10:00", midday: "12:00", afternoon: "14:00", dayClose: "18:00", eveningStart: "20:00", eveningEnd: "24:00", noResponseMinutes: 10 },
-  }, { analyzer });
+  };
+  const app = createManagerApp(config, { analyzer, clock: { now: () => now } });
 
-  await app.state.weeklyPlanning.generateDraft({ weekId: "2026-W29" });
+  seedFixedReminders({ now, config, settings: app.state.settings, ops: app.state.ops });
+  now = new Date("2026-07-12T14:01:00.000Z");
+  await app.state.reminderEngine.processDue();
+  assert.equal(app.state.projectOps.getLatestWeeklyPlan("2026-W29").status, "draft");
+  const progressBeforeConfirmation = (await app.state.projectRepo.readProject("personal-ip")).progress;
   await app.state.weeklyPlanning.confirm({ weekId: "2026-W29", version: 1, eventId: "confirm-1" });
+  const canonical = await app.state.weeklyPlanRepo.read("2026-W29");
+  assert.equal(canonical.status, "confirmed");
+  assert.deepEqual(canonical.tasks[0], {
+    taskId: "publish-video-01", projectId: "personal-ip", projectName: "个人IP",
+    milestoneId: "content-validation", deliverableId: "video-01", title: "发布首条短视频",
+    deliverable: "发布首条短视频", completionStandard: "公开视频上线", minutes: 90,
+    date: "2026-07-13", requiresEvidence: true, impact: "normal",
+  });
+  assert.equal((await app.state.projectRepo.readProject("personal-ip")).progress, progressBeforeConfirmation);
   await app.state.manager.dispatchDay({ date: "2026-07-13", now: "2026-07-13T00:00:00.000Z" });
   const task = app.state.tasks.listActive().find((item) => item.deliverableId === "video-01");
+  assert.equal(task.estimateMinutes, 90);
+  assert.equal(task.doneDefinition, "公开视频上线");
   await app.state.manager.handleAction({ action: "start", taskId: task.id, idempotencyKey: "start-1" });
   await app.state.manager.handleAction({ action: "complete", taskId: task.id, idempotencyKey: "complete-1" });
   await app.state.acceptance.submit({ taskId: task.id, evidence: [{ type: "url", value: "https://example.com/v/1" }], idempotencyKey: "evidence-1" });
@@ -173,8 +190,8 @@ test("daily dispatch materializes the confirmed weekly plan before scheduling", 
     plan: { tasks: [{
       taskId: "publish-video-01", projectId: "personal-ip", projectName: "个人IP",
       milestoneId: "content-validation", deliverableId: "video-01", title: "发布首条短视频",
-      suggestedDate: "2026-07-13", requiresEvidence: true, impact: "high",
-      estimateMinutes: 90, nextAction: "剪出初版", completionStandard: "公开视频上线",
+      date: "2026-07-13", requiresEvidence: true, impact: "normal",
+      minutes: 90, completionStandard: "公开视频上线",
     }] },
   });
   const settings = {

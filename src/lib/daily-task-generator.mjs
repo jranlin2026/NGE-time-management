@@ -1,3 +1,5 @@
+import { weeklyTaskToDailyTask } from "./weekly-task-adapter.mjs";
+
 export function createDailyTaskGenerator({ tasks, projectOps }) {
   return { materialize };
 
@@ -5,22 +7,8 @@ export function createDailyTaskGenerator({ tasks, projectOps }) {
     const row = projectOps.getConfirmedWeeklyPlan(weekId);
     if (!row) return [];
     return (row.plan.tasks || [])
-      .filter((item) => item.suggestedDate === date)
-      .map((item) => tasks.create({
-        id: `weekly:${weekId}:${item.taskId}`,
-        rawInput: item.title,
-        title: item.title,
-        project: item.projectName,
-        projectId: item.projectId,
-        milestoneId: item.milestoneId,
-        deliverableId: item.deliverableId,
-        requiresEvidence: item.requiresEvidence,
-        impact: item.impact,
-        estimateMinutes: item.estimateMinutes,
-        nextAction: item.nextAction,
-        doneDefinition: item.completionStandard ?? item.doneDefinition,
-        status: "ready",
-      }));
+      .filter((item) => item.date === date)
+      .map((item) => tasks.create(weeklyTaskToDailyTask({ weekId, task: item })));
   }
 }
 

@@ -18,10 +18,10 @@ test("materializes only confirmed weekly tasks for the requested date with stabl
       plan: { tasks: [{
         taskId: "publish-video-01", projectId: "personal-ip", projectName: "个人IP",
         milestoneId: "content-validation", deliverableId: "video-01", title: "发布首条短视频",
-        suggestedDate: "2026-07-13", requiresEvidence: true, impact: "high",
-        estimateMinutes: 90, nextAction: "剪出初版", completionStandard: "公开视频上线",
+        date: "2026-07-13", requiresEvidence: true, impact: "normal",
+        minutes: 90, completionStandard: "公开视频上线",
       }, {
-        taskId: "tomorrow", suggestedDate: "2026-07-14", title: "明日任务",
+        taskId: "tomorrow", date: "2026-07-14", title: "明日任务",
       }] },
     }) : null,
   };

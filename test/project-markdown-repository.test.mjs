@@ -102,6 +102,33 @@ test("reads structured projects and computes accepted weighted progress", async 
   assert.match(project.contentHash, /^[a-f0-9]{64}$/);
 });
 
+test("weekly deliverable changes cannot alter accepted scope or create pre-accepted progress", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "project-repo-weekly-guard-"));
+  await writeProject(root, { deliverableStatus: "accepted" });
+  const repo = createProjectMarkdownRepository({ kbDir: root });
+  const before = await repo.readProject("personal-ip");
+  for (const change of [
+    { action: "remove", deliverableId: "video-01" },
+    { action: "update", deliverableId: "video-01", status: "doing", evidence: "forged" },
+  ]) {
+    await assert.rejects(repo.applyDeliverableChanges({
+      projectId: "personal-ip", expectedHash: before.contentHash,
+      changes: [{ ...change, milestoneId: "content-validation", name: "changed", weight: 50 }],
+    }), /accepted deliverable/);
+  }
+  await assert.rejects(repo.applyDeliverableChanges({
+    projectId: "personal-ip", expectedHash: before.contentHash,
+    changes: [{ action: "add", deliverableId: "video-03", milestoneId: "content-validation", name: "new", weight: 10, status: "accepted", evidence: "forged" }],
+  }), /new deliverable.*pending.*empty evidence/);
+  await assert.rejects(repo.applyDeliverableChanges({
+    projectId: "personal-ip", expectedHash: before.contentHash,
+    changes: [{ action: "update", deliverableId: "video-02", milestoneId: "content-validation", name: "changed", weight: 90, status: "accepted", evidence: "forged" }],
+  }), /cannot set accepted status or evidence/);
+  const after = await repo.readProject("personal-ip");
+  assert.equal(after.progress, before.progress);
+  assert.equal(after.milestones[0].deliverables[0].status, "accepted");
+});
+
 test("rejects weights that do not total one hundred", async () => {
   await writeProject(root, { milestoneWeight: 90 });
   const repo = createProjectMarkdownRepository({ kbDir: root });
