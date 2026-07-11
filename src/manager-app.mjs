@@ -59,6 +59,7 @@ export function createManagerApp(config, deps = {}) {
     ops.saveReview({ date, summary, renderedText });
     await exportDay({
       exportDir: config.markdownExportDir,
+      kbDir: config.kbDir,
       date,
       schedule: {
         blocks: ops.currentSchedule(date).map((block) => ({

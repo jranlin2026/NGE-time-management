@@ -35,7 +35,9 @@ test("builds a factual review from tasks, schedule, and events", async () => {
   assert.match(renderDailyReview(summary), /no_response_2/);
 
   const exportDir = await fs.mkdtemp(path.join(os.tmpdir(), "time-manager-export-"));
-  const files = await exportDay({ exportDir, date: "2026-07-10", schedule, review: summary });
+  const kbDir = await fs.mkdtemp(path.join(os.tmpdir(), "time-manager-kb-"));
+  const files = await exportDay({ exportDir, kbDir, date: "2026-07-10", schedule, review: summary });
   assert.match(await fs.readFile(files.reviewFile, "utf8"), /今日完成度：67%/);
   assert.match(await fs.readFile(files.planFile, "utf8"), /任务 a/);
+  assert.match(await fs.readFile(files.knowledgeBaseReviewFile, "utf8"), /今日完成度：67%/);
 });

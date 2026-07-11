@@ -3,13 +3,20 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { renderDailyReview } from "./daily-review.mjs";
 
-export async function exportDay({ exportDir, date, schedule, review }) {
+export async function exportDay({ exportDir, kbDir = "", date, schedule, review }) {
   await fs.mkdir(exportDir, { recursive: true });
   const planFile = path.join(exportDir, `${date}-plan.md`);
   const reviewFile = path.join(exportDir, `${date}-review.md`);
   await atomicWrite(planFile, renderSchedule(date, schedule));
   await atomicWrite(reviewFile, renderDailyReview(review));
-  return { planFile, reviewFile };
+  const knowledgeBaseReviewFile = kbDir
+    ? path.join(kbDir, "每日复盘", `${date}.md`)
+    : "";
+  if (knowledgeBaseReviewFile) {
+    await fs.mkdir(path.dirname(knowledgeBaseReviewFile), { recursive: true });
+    await atomicWrite(knowledgeBaseReviewFile, renderDailyReview(review));
+  }
+  return { planFile, reviewFile, knowledgeBaseReviewFile };
 }
 
 function renderSchedule(date, schedule) {
