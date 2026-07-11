@@ -53,6 +53,25 @@ test("updates only allowed task columns", () => {
   db.close();
 });
 
+test("persists and completes task checkpoints", () => {
+  const { db, tasks } = setup();
+  const created = tasks.create({
+    id: "task-checkpoints",
+    rawInput: "完成第一条口播",
+    checkpoints: ["写完脚本", "录制素材", "提交剪辑"],
+  });
+
+  assert.deepEqual(created.checkpoints, [
+    { title: "写完脚本", completed: false },
+    { title: "录制素材", completed: false },
+    { title: "提交剪辑", completed: false },
+  ]);
+  const updated = tasks.completeCheckpoint(created.id, 1);
+  assert.equal(updated.checkpoints[1].completed, true);
+  assert.equal(tasks.findById(created.id).checkpoints[0].completed, false);
+  db.close();
+});
+
 test("replaces schedules by version without deleting history", () => {
   const { db, tasks, ops } = setup();
   tasks.create({ id: "task-1", rawInput: "拍视频" });

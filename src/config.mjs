@@ -10,14 +10,14 @@ export function loadConfig(env = process.env) {
   const merged = mergeEnv(dotEnv, env);
   const dataDir = path.resolve(merged.TIME_MASTER_DATA_DIR || path.join(process.cwd(), "data"));
   const schedule = {
-    plan: merged.TIME_MASTER_PLAN_TIME || "08:30",
+    plan: merged.TIME_MASTER_PLAN_TIME || "08:00",
     firstTask: merged.TIME_MASTER_FIRST_TASK_TIME || "10:00",
     midday: merged.TIME_MASTER_MIDDAY_TIME || "12:00",
     afternoon: merged.TIME_MASTER_AFTERNOON_TIME || "14:00",
     dayClose: merged.TIME_MASTER_DAY_CLOSE_TIME || "18:00",
     eveningStart: merged.TIME_MASTER_EVENING_START || "20:00",
-    eveningEnd: merged.TIME_MASTER_EVENING_END || "22:00",
-    noResponseMinutes: Number(merged.TIME_MASTER_NO_RESPONSE_MINUTES || 15),
+    eveningEnd: merged.TIME_MASTER_EVENING_END || "24:00",
+    noResponseMinutes: Number(merged.TIME_MASTER_NO_RESPONSE_MINUTES || 10),
   };
   return {
     port: Number(merged.PORT || 8787),
