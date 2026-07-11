@@ -51,3 +51,50 @@ test("rejects confirmation after the weekly plan changed", async () => {
     weekId: "2026-W29", version: 1, expectedHash: draft.contentHash,
   }), /weekly plan changed since read/);
 });
+
+test("does not overwrite a writer that recreates the plan after confirmation claims it", async () => {
+  const external = "external writer won\n";
+  let claimedPath;
+  const repo = createWeeklyPlanRepository({
+    kbDir: root,
+    afterConfirmClaim: async ({ filePath }) => {
+      claimedPath = filePath;
+      await fs.writeFile(filePath, external, { encoding: "utf8", flag: "wx" });
+    },
+  });
+  const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
+
+  await assert.rejects(() => repo.confirm({
+    weekId: "2026-W29", version: 1, expectedHash: draft.contentHash,
+  }), /weekly plan changed during confirmation/);
+  assert.equal(claimedPath, draft.filePath);
+  assert.equal(await fs.readFile(draft.filePath, "utf8"), external);
+});
+
+test("restores the claimed plan when the expected hash is stale", async () => {
+  const changed = "changed between read and claim\n";
+  const repo = createWeeklyPlanRepository({
+    kbDir: root,
+    beforeConfirmClaim: async ({ filePath }) => fs.writeFile(filePath, changed, "utf8"),
+  });
+  const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
+
+  await assert.rejects(() => repo.confirm({
+    weekId: "2026-W29", version: 1, expectedHash: draft.contentHash,
+  }), /weekly plan changed since read/);
+  assert.equal(await fs.readFile(draft.filePath, "utf8"), changed);
+});
+
+test("reads and confirms a CRLF weekly plan", async () => {
+  const repo = createWeeklyPlanRepository({ kbDir: root });
+  const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
+  const crlf = draft.rawContent.replaceAll("\n", "\r\n");
+  await fs.writeFile(draft.filePath, crlf, "utf8");
+  const reread = await repo.read("2026-W29");
+
+  assert.deepEqual(reread.tasks, plan.tasks);
+  const confirmed = await repo.confirm({
+    weekId: "2026-W29", version: 1, expectedHash: reread.contentHash,
+  });
+  assert.equal(confirmed.status, "confirmed");
+});

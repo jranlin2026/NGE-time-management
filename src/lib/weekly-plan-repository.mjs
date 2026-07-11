@@ -91,8 +91,9 @@ function parse(rawContent, filePath) {
   const version = Number(values.version);
   if (!Number.isInteger(version) || version < 1) throw new Error("invalid weekly plan version");
   if (!STATUSES.has(values.status)) throw new Error("invalid weekly plan status");
-  const taskBlock = rawContent.split("## 任务\n\n")[1];
-  if (taskBlock === undefined) throw new Error("missing weekly plan section: 任务");
+  const taskMatch = rawContent.match(/## 任务\r?\n\r?\n([\s\S]*)$/);
+  if (!taskMatch) throw new Error("missing weekly plan section: 任务");
+  const taskBlock = taskMatch[1];
   const lines = taskBlock.split(/\r?\n/).filter((line) => line.startsWith("|"));
   if (lines.length < 2 || splitRow(lines[0]).join() !== TASK_HEADERS.join()) throw new Error("invalid weekly task table");
   const tasks = lines.slice(2).map((line) => {
@@ -121,7 +122,48 @@ async function atomicWrite(filePath, content) {
   }
 }
 
-export function createWeeklyPlanRepository({ kbDir, now = () => new Date().toISOString() }) {
+async function atomicCompareReplace(filePath, content, expectedHash, afterClaim) {
+  const suffix = `${process.pid}.${randomUUID()}`;
+  const temporaryPath = `${filePath}.${suffix}.tmp`;
+  const backupPath = `${filePath}.${suffix}.bak`;
+  let claimed = false;
+  try {
+    await fs.writeFile(temporaryPath, content, { encoding: "utf8", flag: "wx" });
+    await fs.rename(filePath, backupPath);
+    claimed = true;
+    await afterClaim?.({ filePath, backupPath, temporaryPath });
+    const claimedContent = await fs.readFile(backupPath, "utf8");
+    if (hash(claimedContent) !== expectedHash) throw new Error("weekly plan changed since read");
+    try {
+      await fs.link(temporaryPath, filePath);
+    } catch (error) {
+      if (error.code === "EEXIST") throw new Error("weekly plan changed during confirmation", { cause: error });
+      throw error;
+    }
+    await fs.rm(temporaryPath, { force: true });
+    await fs.rm(backupPath, { force: true });
+    claimed = false;
+  } catch (error) {
+    if (claimed) {
+      try {
+        await fs.link(backupPath, filePath);
+      } catch (restoreError) {
+        if (restoreError.code !== "EEXIST") throw new AggregateError([error, restoreError], "weekly plan restore failed");
+      }
+    }
+    throw error;
+  } finally {
+    await fs.rm(temporaryPath, { force: true });
+    await fs.rm(backupPath, { force: true });
+  }
+}
+
+export function createWeeklyPlanRepository({
+  kbDir,
+  now = () => new Date().toISOString(),
+  beforeConfirmClaim,
+  afterConfirmClaim,
+}) {
   const weeklyDir = path.join(kbDir, "周计划");
   const fileFor = (weekId) => path.join(weeklyDir, `${weekId}.md`);
 
@@ -148,7 +190,10 @@ export function createWeeklyPlanRepository({ kbDir, now = () => new Date().toISO
     if (current.version !== version || current.contentHash !== expectedHash) {
       throw new Error("weekly plan changed since read");
     }
-    return writePlan({ ...current, status: "confirmed", confirmedAt: now() });
+    const content = render({ ...current, status: "confirmed", confirmedAt: now() });
+    await beforeConfirmClaim?.({ filePath: current.filePath });
+    await atomicCompareReplace(current.filePath, content, expectedHash, afterConfirmClaim);
+    return read(weekId);
   }
 
   return { writeDraft, read, confirm };

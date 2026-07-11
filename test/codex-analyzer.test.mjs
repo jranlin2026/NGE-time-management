@@ -153,3 +153,19 @@ test("rejects deliverable changes that reference unknown project structure", asy
   assert.equal(result.analysisStatus, "failed");
   assert.match(result.analysisError, /unknown deliverable change milestone/);
 });
+
+test("fallback task ids stay unique when projects reuse a deliverable id", async () => {
+  const duplicateIds = [projects[0], {
+    id: "jixiang-os", name: "极享OS", status: "active", priority: 2,
+    milestones: [{
+      id: "release", name: "发布", status: "active",
+      deliverables: [{ id: "video-01", name: "发布演示视频", status: "pending" }],
+    }],
+  }];
+  const analyzer = createCodexAnalyzer({}, { run: async () => { throw new Error("offline"); } });
+  const result = await analyzer.analyzeWeeklyPlan({ weekId: "2026-W29", projects: duplicateIds });
+
+  assert.equal(new Set(result.tasks.map((task) => task.taskId)).size, 2);
+  assert.match(result.tasks[0].taskId, /2026-W29:personal-ip:content-validation:video-01/);
+  assert.match(result.tasks[1].taskId, /2026-W29:jixiang-os:release:video-01/);
+});

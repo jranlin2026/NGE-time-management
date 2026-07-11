@@ -258,7 +258,8 @@ export function fallbackWeeklyPlan({ weekId, projects, error }) {
     outcomes: pending.map(({ deliverable }) => deliverable.name),
     deliverableChanges: [],
     tasks: pending.map(({ project, milestone, deliverable }) => ({
-      taskId: `${weekId}:${deliverable.id}`, projectId: project.id, projectName: project.name,
+      taskId: `${weekId}:${project.id}:${milestone.id}:${deliverable.id}`,
+      projectId: project.id, projectName: project.name,
       milestoneId: milestone.id, deliverableId: deliverable.id, title: deliverable.name,
       deliverable: deliverable.name, completionStandard: deliverable.evidence || `提交可验收的${deliverable.name}`,
       minutes: 120, date, requiresEvidence: true, impact: "normal",
