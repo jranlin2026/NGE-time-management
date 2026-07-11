@@ -16,9 +16,17 @@ export function renderDailyPlanCard({ date, blocks }) {
 
 export function renderCurrentTaskCard({ task, startsAt, endsAt }) {
   const checkpoints = task.checkpoints || [];
-  return card("现在只做这一件", "purple", [
+  const isDoing = task.status === "doing";
+  const actions = [
+    ...(!isDoing ? [button("▶ 开始", "start", task.id, "primary")] : []),
+    button("✓ 完成", "complete", task.id, "primary"),
+    button("! 卡住", "block", task.id, "danger"),
+    button("＋ 推迟 30 分钟", "defer_30", task.id, "default"),
+  ];
+  return card(isDoing ? "进行中：现在只做这一件" : "现在只做这一件", "purple", [
     markdown([
       `**${task.title}**`,
+      ...(isDoing ? ["状态：**进行中**"] : []),
       `时间：${startsAt}–${endsAt}`,
       `第一步：${task.nextAction}`,
       `完成标准：${task.doneDefinition}`,
@@ -26,12 +34,7 @@ export function renderCurrentTaskCard({ task, startsAt, endsAt }) {
     ...checkpoints.map((checkpoint, index) => checkpoint.completed
       ? markdown(`✓ ${checkpoint.title}`)
       : button(`○ ${checkpoint.title}`, "complete_checkpoint", task.id, "default", { checkpointIndex: index })),
-    buttonRow([
-      button("▶ 开始", "start", task.id, "primary"),
-      button("✓ 完成", "complete", task.id, "primary"),
-      button("! 卡住", "block", task.id, "danger"),
-      button("＋ 推迟 30 分钟", "defer_30", task.id, "default"),
-    ]),
+    buttonRow(actions),
   ]);
 }
 

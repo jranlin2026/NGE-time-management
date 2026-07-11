@@ -221,6 +221,15 @@ export async function connectFeishu(config, { manager, tasks, ops }) {
     "card.action.trigger": async (data) => {
       const extracted = extractCardAction(data);
       const action = extracted ? normalizeManagerAction(extracted) : null;
+      if (action?.action === "start") {
+        try {
+          const result = await manager.handleAction(action);
+          return renderCardActionResponse(action, result);
+        } catch (error) {
+          console.error(`card action failed: ${error.message}`);
+          return { toast: { type: "error", content: `开始失败：${error.message}` } };
+        }
+      }
       if (action) {
         void manager.handleAction(action).catch((error) => {
           console.error(`card action failed: ${error.message}`);
@@ -246,6 +255,24 @@ export async function connectFeishu(config, { manager, tasks, ops }) {
       await wsClient.close?.();
     },
   };
+}
+
+export function renderCardActionResponse(action, result) {
+  if (action?.action === "start" && result?.task) {
+    const alreadyStarted = ["already_started", "duplicate"].includes(result.action);
+    return {
+      toast: {
+        type: "success",
+        content: alreadyStarted ? "任务已经在进行中。" : "已开始，专注完成当前任务。",
+      },
+      card: renderCurrentTaskCard({
+        task: { ...result.task, status: "doing" },
+        startsAt: "已开始",
+        endsAt: "完成为止",
+      }),
+    };
+  }
+  return { toast: { type: "success", content: "已收到，计划会自动更新。" } };
 }
 
 export function seedFixedReminders({ now, config, settings, ops }) {

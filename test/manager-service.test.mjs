@@ -129,6 +129,22 @@ test("does not start a second task while one is doing", async () => {
   db.close();
 });
 
+test("starting the current doing task is idempotent and gives visible feedback", async () => {
+  const { db, tasks, ops, manager } = setup();
+  tasks.create({ id: "current", title: "拍视频", rawInput: "拍视频", status: "doing" });
+
+  const result = await manager.handleAction({
+    action: "start",
+    taskId: "current",
+    idempotencyKey: "card:evt-repeat-start",
+  });
+
+  assert.equal(result.action, "already_started");
+  assert.equal(result.task.status, "doing");
+  assert.match(ops.listOutbox().at(-1).payload.text, /已经在进行中/);
+  db.close();
+});
+
 test("asks for disambiguation when a text title matches two tasks", async () => {
   const { db, tasks, ops, manager } = setup();
   tasks.create({ id: "a", title: "拍视频第一批", rawInput: "拍视频第一批", status: "ready" });

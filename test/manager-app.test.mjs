@@ -3,7 +3,29 @@ import test from "node:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createManagerApp } from "../src/manager-app.mjs";
+import { createManagerApp, renderCardActionResponse } from "../src/manager-app.mjs";
+
+test("start callback replaces the source card with a doing-state card", () => {
+  const response = renderCardActionResponse(
+    { action: "start" },
+    {
+      action: "start",
+      task: {
+        id: "task-1",
+        title: "拍视频",
+        status: "doing",
+        nextAction: "打开提纲",
+        doneDefinition: "交付可剪辑素材",
+      },
+    },
+  );
+  const row = response.card.body.elements.find((element) => element.tag === "column_set");
+  const actions = row.columns.flatMap((column) => column.elements)
+    .map((button) => button.behaviors[0].value.action);
+
+  assert.match(response.toast.content, /已开始/);
+  assert.deepEqual(actions, ["complete", "block", "defer_30"]);
+});
 
 test("starts locally, seeds seven days of fixed reminders, recovers, and stops cleanly", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "time-manager-app-"));

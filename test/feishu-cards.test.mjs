@@ -29,6 +29,22 @@ test("current task card exposes four actions with task id", () => {
   assert.ok(buttons.every((button) => button.behaviors[0].value.taskId === "task-1"));
 });
 
+test("doing task card shows its status and removes the start action", () => {
+  const card = renderCurrentTaskCard({
+    task: { ...task, status: "doing" },
+    startsAt: "已开始",
+    endsAt: "完成为止",
+  });
+  const row = card.body.elements.find((element) => element.tag === "column_set");
+  const buttons = row.columns.flatMap((column) => column.elements);
+
+  assert.match(JSON.stringify(card), /进行中/);
+  assert.deepEqual(
+    buttons.map((button) => button.behaviors[0].value.action),
+    ["complete", "block", "defer_30"],
+  );
+});
+
 test("current task card exposes incomplete checkpoints as individual actions", () => {
   const card = renderCurrentTaskCard({
     task: { ...task, checkpoints: [{ title: "写脚本", completed: true }, { title: "录制素材", completed: false }] },

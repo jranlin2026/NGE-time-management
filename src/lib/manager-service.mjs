@@ -126,6 +126,14 @@ export function createManagerService(deps) {
       return { action: input.action, task: updated };
     }
     if (input.action === "start") {
+      if (task.status === "doing") {
+        ops.enqueueOutbox({
+          kind: "status_message",
+          payload: { text: `已经在进行中：${task.title}`, taskId: task.id },
+          idempotencyKey: input.idempotencyKey ? `outbox:${input.idempotencyKey}` : `already-started:${task.id}:${Date.now()}`,
+        });
+        return { action: "already_started", task };
+      }
       const current = tasks.findDoing();
       if (current && current.id !== task.id) {
         ops.enqueueOutbox({
