@@ -266,3 +266,82 @@ test("refuses to overwrite concurrent human edits", async () => {
     projectId: "personal-ip", deliverableId: "video-01", evidence: "x", expectedHash: before.contentHash,
   }), /project changed since read/);
 });
+
+test("durable receipt resumes a crash before Markdown replacement with the exact delta", async () => {
+  await writeProject(root);
+  let fail = true;
+  const repo = createProjectMarkdownRepository({ kbDir: root, failureInjector(point) {
+    if (fail && point === "after_receipt_write") throw new Error("crash after receipt");
+  } });
+  const before = await repo.readProject("personal-ip");
+  const input = { projectId: "personal-ip", deliverableId: "video-01", evidence: "proof", expectedHash: before.contentHash, operationKey: "acceptance-a1" };
+
+  await assert.rejects(() => repo.acceptDeliverable(input), /crash after receipt/);
+  assert.equal((await repo.readProject("personal-ip")).contentHash, before.contentHash);
+  fail = false;
+  const recovered = await repo.acceptDeliverable(input);
+  assert.equal(recovered.beforeProgress, 0);
+  assert.equal(recovered.projectProgress, 10);
+  assert.equal((await fs.readdir(path.join(root, "项目变更记录"))).length, 1);
+});
+
+test("durable receipt recognizes a crash after Markdown replacement without duplicating progress", async () => {
+  await writeProject(root);
+  let fail = true;
+  const repo = createProjectMarkdownRepository({ kbDir: root, failureInjector(point) {
+    if (fail && point === "after_markdown_write") throw new Error("crash after markdown");
+  } });
+  const before = await repo.readProject("personal-ip");
+  const input = { projectId: "personal-ip", deliverableId: "video-01", evidence: "proof", expectedHash: before.contentHash, operationKey: "acceptance-a1" };
+
+  await assert.rejects(() => repo.acceptDeliverable(input), /crash after markdown/);
+  assert.equal((await repo.readProject("personal-ip")).progress, 10);
+  fail = false;
+  const recovered = await repo.acceptDeliverable(input);
+  assert.equal(recovered.beforeProgress, 0);
+  assert.equal(recovered.projectProgress, 10);
+  assert.equal((await fs.readdir(path.join(root, "项目变更记录"))).length, 1);
+});
+
+test("receipt write failure leaves Markdown untouched and no receipt", async () => {
+  await writeProject(root);
+  const repo = createProjectMarkdownRepository({ kbDir: root, failureInjector(point) {
+    if (point === "before_receipt_write") throw new Error("receipt unavailable");
+  } });
+  const before = await repo.readProject("personal-ip");
+  await assert.rejects(() => repo.acceptDeliverable({ projectId: "personal-ip", deliverableId: "video-01", evidence: "proof", expectedHash: before.contentHash, operationKey: "acceptance-a1" }), /receipt unavailable/);
+  assert.equal((await repo.readProject("personal-ip")).contentHash, before.contentHash);
+  await assert.rejects(() => fs.readdir(path.join(root, "项目变更记录")), /ENOENT/);
+});
+
+test("receipt reapplies a reverted effect but rejects unrelated edits", async () => {
+  await writeProject(root);
+  let fail = true;
+  const repo = createProjectMarkdownRepository({ kbDir: root, failureInjector(point) {
+    if (fail && point === "after_receipt_write") throw new Error("stop");
+  } });
+  const before = await repo.readProject("personal-ip");
+  const input = { projectId: "personal-ip", deliverableId: "video-01", evidence: "proof", expectedHash: before.contentHash, operationKey: "acceptance-a1" };
+  await assert.rejects(() => repo.acceptDeliverable(input), /stop/);
+  fail = false;
+  await fs.appendFile(before.filePath, "\n人工无关修改");
+  await assert.rejects(() => repo.acceptDeliverable(input), /reconciliation conflict/);
+  await fs.writeFile(before.filePath, before.rawContent, "utf8");
+  assert.equal((await repo.acceptDeliverable(input)).projectProgress, 10);
+});
+
+test("recovers a legacy accepted effect without a receipt and reconstructs the exact delta", async () => {
+  await writeProject(root);
+  const legacy = createProjectMarkdownRepository({ kbDir: root });
+  const before = await legacy.readProject("personal-ip");
+  await legacy.acceptDeliverable({ projectId: "personal-ip", deliverableId: "video-01", evidence: "proof", expectedHash: before.contentHash });
+  await fs.rm(path.join(root, "项目变更记录"), { recursive: true, force: true });
+  const current = await legacy.readProject("personal-ip");
+
+  const recovered = await legacy.acceptDeliverable({ projectId: "personal-ip", deliverableId: "video-01", evidence: "proof", expectedHash: current.contentHash, operationKey: "acceptance-a1" });
+  assert.equal(recovered.beforeProgress, 0);
+  assert.equal(recovered.projectProgress, 10);
+  const receipt = JSON.parse(await fs.readFile(path.join(root, "项目变更记录", "acceptance-a1.json"), "utf8"));
+  assert.equal(receipt.recovered, true);
+  assert.equal(receipt.afterHash, current.contentHash);
+});

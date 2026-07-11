@@ -15,6 +15,16 @@ export class ProjectFormatError extends Error {
   }
 }
 
+export class ProjectReconciliationConflictError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = "ProjectReconciliationConflictError";
+    this.code = "PROJECT_RECONCILIATION_CONFLICT";
+    this.recoverable = true;
+    this.details = details;
+  }
+}
+
 function fail(message) {
   throw new ProjectFormatError(message);
 }
@@ -172,10 +182,46 @@ function replaceManagedRegion(raw, managed) {
 async function atomicWrite(filePath, content) {
   const temp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    await fs.writeFile(temp, content, "utf8");
+    const handle = await fs.open(temp, "wx");
+    try {
+      await handle.writeFile(content, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await fs.rename(temp, filePath);
+    await syncDirectory(path.dirname(filePath));
   } finally {
     await fs.rm(temp, { force: true });
+  }
+}
+
+async function syncDirectory(dirPath) {
+  const handle = await fs.open(dirPath, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function writeImmutableReceipt(filePath, receipt) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await syncDirectory(path.dirname(path.dirname(filePath)));
+  const temp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  const handle = await fs.open(temp, "wx");
+  try {
+    await handle.writeFile(`${JSON.stringify(receipt, null, 2)}\n`, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await fs.link(temp, filePath);
+    await syncDirectory(path.dirname(filePath));
+  } finally {
+    await fs.rm(temp, { force: true });
+    await syncDirectory(path.dirname(filePath));
   }
 }
 
@@ -183,8 +229,23 @@ function safeTimestamp(value) {
   return value.replace(/:/g, "-");
 }
 
-export function createProjectMarkdownRepository({ kbDir, now = () => new Date().toISOString(), id = randomUUID }) {
+function findProjectDeliverable(project, deliverableId) {
+  return project.milestones.flatMap((item) => item.deliverables).find((item) => item.id === deliverableId);
+}
+
+function deliverableContribution(project, deliverable) {
+  const milestone = project.milestones.find((item) => item.id === deliverable.milestoneId);
+  return Number(milestone?.weight || 0) * Number(deliverable.weight || 0) / 100;
+}
+
+function roundProgress(value) {
+  return Math.round(value * 100) / 100;
+}
+
+export function createProjectMarkdownRepository(deps) {
+  const { kbDir, now = () => new Date().toISOString(), id = randomUUID } = deps;
   const projectDir = path.join(kbDir, "项目");
+  const fail = deps.failureInjector || (() => {});
 
   async function projectFiles() {
     try {
@@ -249,17 +310,7 @@ export function createProjectMarkdownRepository({ kbDir, now = () => new Date().
   }
 
   async function writeManagedChange(input, mutate) {
-    const operationLogPath = input.operationKey
-      ? path.join(kbDir, "项目变更记录", `${input.operationKey.replace(/[^a-zA-Z0-9._-]/g, "-")}.md`)
-      : null;
-    if (operationLogPath) {
-      try {
-        await fs.access(operationLogPath);
-        return readProject(input.projectId);
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
-    }
+    if (input.operationKey) return writeReceiptManagedChange(input, mutate);
     const current = await readProject(input.projectId);
     if (current.contentHash !== input.expectedHash) throw new Error("project changed since read");
     const beforeProgress = computeProjectProgress(current);
@@ -273,11 +324,122 @@ export function createProjectMarkdownRepository({ kbDir, now = () => new Date().
     const timestamp = now();
     const logDir = path.join(kbDir, "项目变更记录");
     await fs.mkdir(logDir, { recursive: true });
-    const logPath = operationLogPath || path.join(logDir, `${safeTimestamp(timestamp)}-${input.projectId}-${id()}.md`);
+    const logPath = path.join(logDir, `${safeTimestamp(timestamp)}-${input.projectId}-${id()}.md`);
     const evidence = input.evidence ?? "";
     const reason = input.reason ?? "deliverable accepted";
     await fs.writeFile(logPath, `# 项目变更记录\n\n- 项目: ${input.projectId}\n- 时间: ${timestamp}\n- 变更前进度: ${beforeProgress}\n- 变更后进度: ${afterProgress}\n- 验收证据: ${evidence}\n- 原因: ${reason}\n`, "utf8");
     return { ...(await readFile(current.filePath)), beforeProgress, projectProgress: afterProgress, changeLogPath: logPath };
+  }
+
+  async function writeReceiptManagedChange(input, mutate) {
+    const safeKey = input.operationKey.replace(/[^a-zA-Z0-9._-]/g, "-");
+    const receiptPath = path.join(kbDir, "项目变更记录", `${safeKey}.json`);
+    const current = await readProject(input.projectId);
+    let receipt = await readReceipt(receiptPath);
+    if (receipt) return recoverFromReceipt({ receipt, receiptPath, current, input });
+
+    const currentDeliverable = findProjectDeliverable(current, input.deliverableId);
+    if (currentDeliverable?.status === "accepted" && currentDeliverable.evidence === (input.evidence ?? "")) {
+      const afterProgress = computeProjectProgress(current);
+      const beforeProgress = roundProgress(afterProgress - deliverableContribution(current, currentDeliverable));
+      receipt = makeReceipt({
+        input, current, afterContent: current.rawContent, afterHash: current.contentHash,
+        beforeHash: null, beforeProgress, afterProgress, recovered: true,
+      });
+      fail("before_receipt_write");
+      await writeImmutableReceipt(receiptPath, receipt);
+      fail("after_receipt_write");
+      return receiptResult(current, receipt, receiptPath);
+    }
+
+    if (current.contentHash !== input.expectedHash) throw new Error("project changed since read");
+    const beforeProgress = computeProjectProgress(current);
+    const updated = structuredClone(current);
+    mutate(updated);
+    const afterContent = replaceManagedRegion(current.rawContent, renderManaged(updated));
+    const validated = parseProject(afterContent, current.filePath);
+    const afterProgress = computeProjectProgress(validated);
+    receipt = makeReceipt({
+      input, current, afterContent, afterHash: hash(afterContent), beforeHash: current.contentHash,
+      beforeProgress, afterProgress, recovered: false,
+    });
+    fail("before_receipt_write");
+    await writeImmutableReceipt(receiptPath, receipt);
+    fail("after_receipt_write");
+    await atomicWrite(current.filePath, afterContent);
+    fail("after_markdown_write");
+    const written = await readFile(current.filePath);
+    assertReceiptEffect(written, receipt);
+    return receiptResult(written, receipt, receiptPath);
+  }
+
+  async function recoverFromReceipt({ receipt, receiptPath, current, input }) {
+    validateReceipt(receipt, input);
+    if (hash(receipt.afterContent) !== receipt.afterHash) throw new ProjectReconciliationConflictError("project reconciliation conflict: receipt content hash mismatch");
+    if (current.contentHash === receipt.afterHash) {
+      assertReceiptEffect(current, receipt);
+      return receiptResult(current, receipt, receiptPath);
+    }
+    if (receipt.beforeHash && current.contentHash === receipt.beforeHash) {
+      await atomicWrite(current.filePath, receipt.afterContent);
+      fail("after_markdown_write");
+      const written = await readFile(current.filePath);
+      assertReceiptEffect(written, receipt);
+      return receiptResult(written, receipt, receiptPath);
+    }
+    throw new ProjectReconciliationConflictError("project reconciliation conflict: current hash matches neither receipt boundary", {
+      currentHash: current.contentHash, beforeHash: receipt.beforeHash, afterHash: receipt.afterHash,
+    });
+  }
+
+  function makeReceipt({ input, current, afterContent, afterHash, beforeHash, beforeProgress, afterProgress, recovered }) {
+    const timestamp = now();
+    return {
+      version: 1,
+      operationKey: input.operationKey,
+      projectId: input.projectId,
+      deliverableId: input.deliverableId || null,
+      beforeHash,
+      afterHash,
+      beforeProgress,
+      afterProgress,
+      mutation: input.reason ?? "deliverable accepted",
+      evidence: input.evidence ?? "",
+      intended: { status: input.deliverableId ? "accepted" : null, evidence: input.evidence ?? "" },
+      afterContent,
+      createdAt: timestamp,
+      recovered,
+      recoveredAt: recovered ? timestamp : null,
+      projectFilePath: current.filePath,
+    };
+  }
+
+  async function readReceipt(receiptPath) {
+    try {
+      return JSON.parse(await fs.readFile(receiptPath, "utf8"));
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      throw new ProjectReconciliationConflictError(`project reconciliation conflict: invalid receipt: ${error.message}`);
+    }
+  }
+
+  function validateReceipt(receipt, input) {
+    if (receipt.operationKey !== input.operationKey || receipt.projectId !== input.projectId
+      || receipt.deliverableId !== (input.deliverableId || null) || receipt.evidence !== (input.evidence ?? "")) {
+      throw new ProjectReconciliationConflictError("project reconciliation conflict: receipt identity does not match request");
+    }
+  }
+
+  function assertReceiptEffect(project, receipt) {
+    if (!receipt.deliverableId) return;
+    const deliverable = findProjectDeliverable(project, receipt.deliverableId);
+    if (deliverable?.status !== receipt.intended.status || deliverable?.evidence !== receipt.intended.evidence) {
+      throw new ProjectReconciliationConflictError("project reconciliation conflict: receipt effect is not present");
+    }
+  }
+
+  function receiptResult(project, receipt, receiptPath) {
+    return { ...project, beforeProgress: receipt.beforeProgress, projectProgress: receipt.afterProgress, changeLogPath: receiptPath, receipt };
   }
 
   async function acceptDeliverable(input) {

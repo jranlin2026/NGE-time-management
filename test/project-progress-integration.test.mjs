@@ -20,13 +20,13 @@ test.afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-async function setup({ failureInjector } = {}) {
+async function setup({ failureInjector, repoFailureInjector } = {}) {
   await writeProject(root);
   const db = openDatabase(":memory:");
   const tasks = createTaskRepository(db);
   const ops = createOperationsRepository(db);
   const acceptances = createProjectOperationsRepository(db, { id: () => "acceptance-1" });
-  const markdownRepo = createProjectMarkdownRepository({ kbDir: root, now: () => "2026-07-12T10:20:30+08:00" });
+  const markdownRepo = createProjectMarkdownRepository({ kbDir: root, now: () => "2026-07-12T10:20:30+08:00", failureInjector: repoFailureInjector });
   let acceptCalls = 0;
   const projectRepo = {
     readProject: (...args) => markdownRepo.readProject(...args),
@@ -67,6 +67,7 @@ test("accepted evidence writes project progress exactly once across duplicate su
   assert.equal(computeProjectProgress(await fixture.projectRepo.readProject("personal-ip")), 10);
   assert.equal(fixture.ops.listEvents({ taskId: "critical", kind: "task_accepted" }).length, 1);
   assert.equal(fixture.acceptCalls(), 1);
+  assert.equal((await fs.readdir(path.join(root, "项目变更记录"))).length, 1);
   assert.equal(fixture.ops.listOutbox().filter((row) => row.kind === "project_progress_card").length, 1);
   fixture.db.close();
 });
@@ -90,7 +91,7 @@ test("reconciles SQLite after Markdown was accepted without applying progress tw
   const result = await fixture.service.submit(input);
   assert.equal(result.status, "accepted");
   assert.equal(fixture.tasks.findById("critical").status, "done");
-  assert.equal(fixture.acceptCalls(), 1);
+  assert.equal((await fs.readdir(path.join(root, "项目变更记录"))).length, 1);
   assert.equal(fixture.acceptances.getSyncState("personal-ip").contentHash, (await fixture.projectRepo.readProject("personal-ip")).contentHash);
   const progressCard = fixture.ops.listOutbox().find((row) => row.kind === "project_progress_card");
   assert.equal(progressCard.payload.beforeProgress, 0);
@@ -139,6 +140,62 @@ test("manual acceptance by acceptance id writes project progress and is idempote
   assert.equal(fixture.tasks.findById("critical").status, "done");
   assert.equal(computeProjectProgress(await fixture.projectRepo.readProject("personal-ip")), 10);
   assert.equal(fixture.acceptCalls(), 1);
+  fixture.db.close();
+});
+
+test("project receipt conflict keeps acceptance pending and converges after restoring the before hash", async () => {
+  let failAfterReceipt = true;
+  const fixture = await setup({ repoFailureInjector(point) {
+    if (failAfterReceipt && point === "after_receipt_write") {
+      failAfterReceipt = false;
+      throw new Error("crash after receipt");
+    }
+  } });
+  pending(fixture);
+  const before = await fixture.projectRepo.readProject("personal-ip");
+  const input = { taskId: "critical", evidence: [{ type: "url", value: "https://example.com/video" }], idempotencyKey: "receipt-conflict" };
+
+  await assert.rejects(() => fixture.service.submit(input), /crash after receipt/);
+  await fs.appendFile(before.filePath, "\n人工并发修改");
+  await assert.rejects(() => fixture.service.submit(input), /reconciliation conflict/);
+  assert.equal(fixture.tasks.findById("critical").status, "pending_acceptance");
+  assert.equal(fixture.acceptances.getAcceptance("acceptance-1").status, "pending");
+  assert.equal(fixture.ops.listEvents({ taskId: "critical", kind: "project_sync_reconciliation_required" }).length, 1);
+
+  await fs.writeFile(before.filePath, before.rawContent, "utf8");
+  const recovered = await fixture.service.submit(input);
+  assert.equal(recovered.status, "accepted");
+  assert.equal(fixture.tasks.findById("critical").status, "done");
+  assert.equal(fixture.ops.listEvents({ taskId: "critical", kind: "task_accepted" }).length, 1);
+  assert.equal(fixture.ops.listOutbox().filter((row) => row.kind === "project_progress_card").length, 1);
+  assert.deepEqual(fixture.ops.listOutbox().find((row) => row.kind === "project_progress_card").payload.beforeProgress, 0);
+  assert.equal((await fs.readdir(path.join(root, "项目变更记录"))).length, 1);
+  fixture.db.close();
+});
+
+test("manual acceptance resumes the same receipt boundary and rejects invalid decisions without writes", async () => {
+  let failAfterMarkdown = true;
+  const fixture = await setup({ repoFailureInjector(point) {
+    if (failAfterMarkdown && point === "after_markdown_write") {
+      failAfterMarkdown = false;
+      throw new Error("manual crash after markdown");
+    }
+  } });
+  pending(fixture);
+  await fixture.service.submit({ taskId: "critical", evidence: [{ type: "feishu_image", value: "img_1" }], idempotencyKey: "manual-review-request" });
+  const eventsBeforeInvalid = fixture.ops.listEvents().length;
+  await assert.rejects(() => fixture.service.decideByUser({ acceptanceId: "acceptance-1", decision: "maybe", idempotencyKey: "manual-invalid" }), /invalid acceptance decision/);
+  assert.equal(fixture.ops.listEvents().length, eventsBeforeInvalid);
+  assert.equal((await fixture.projectRepo.readProject("personal-ip")).progress, 0);
+
+  const input = { acceptanceId: "acceptance-1", decision: "accepted", explanation: "人工确认", idempotencyKey: "manual-receipt" };
+  await assert.rejects(() => fixture.service.decideByUser(input), /manual crash after markdown/);
+  assert.equal(fixture.tasks.findById("critical").status, "pending_acceptance");
+  const recovered = await fixture.service.decideByUser(input);
+  assert.equal(recovered.status, "accepted");
+  assert.equal(fixture.tasks.findById("critical").status, "done");
+  assert.equal(fixture.ops.listOutbox().filter((row) => row.kind === "project_progress_card").length, 1);
+  assert.equal((await fs.readdir(path.join(root, "项目变更记录"))).length, 1);
   fixture.db.close();
 });
 

@@ -31,13 +31,8 @@ export function createAcceptanceService(deps) {
     let projectWrite = null;
     if (decision.status === "accepted" && projectRepo && taskForAnalysis.projectId) {
       const acceptanceId = requirePending(taskId).acceptance.id;
-      const project = await projectRepo.readProject(taskForAnalysis.projectId);
-      const deliverable = findDeliverable(project, taskForAnalysis.deliverableId);
-      if (deliverable?.status === "accepted") {
-        const progress = projectProgress(project);
-        const reconciliation = ops.findEventByIdempotencyKey(`project-sync-reconcile:${acceptanceId}`)?.payload;
-        projectWrite = { ...project, beforeProgress: reconciliation?.beforeProgress ?? progress, projectProgress: reconciliation?.afterProgress ?? progress, reconciled: true };
-      } else {
+      try {
+        const project = await projectRepo.readProject(taskForAnalysis.projectId);
         projectWrite = await projectRepo.acceptDeliverable({
           projectId: taskForAnalysis.projectId,
           deliverableId: taskForAnalysis.deliverableId,
@@ -45,6 +40,9 @@ export function createAcceptanceService(deps) {
           expectedHash: project.contentHash,
           operationKey: `acceptance-${acceptanceId}`,
         });
+      } catch (error) {
+        recordReconciliation({ task: taskForAnalysis, acceptanceId, error });
+        throw error;
       }
     }
 
@@ -116,18 +114,16 @@ export function createAcceptanceService(deps) {
       });
     } catch (error) {
       if (projectWrite) {
-        ops.appendEvent({
-          taskId,
-          kind: "project_sync_reconciliation_required",
-          payload: { projectId: taskForAnalysis.projectId, acceptanceId: requirePending(taskId).acceptance.id, contentHash: projectWrite.contentHash, beforeProgress: projectWrite.beforeProgress, afterProgress: projectWrite.projectProgress },
-          idempotencyKey: `project-sync-reconcile:${requirePending(taskId).acceptance.id}`,
-        });
+        recordReconciliation({ task: taskForAnalysis, acceptanceId: requirePending(taskId).acceptance.id, projectWrite, error });
       }
       throw error;
     }
   }
 
   async function decideByUser({ taskId, acceptanceId, accepted, decision, explanation = "", idempotencyKey = "" }) {
+    if (decision !== undefined && !["accepted", "rejected"].includes(decision)) {
+      throw new Error(`invalid acceptance decision: ${decision}`);
+    }
     const selectedAcceptance = acceptanceId ? acceptances.getAcceptance(acceptanceId) : null;
     taskId = taskId || selectedAcceptance?.taskId;
     const isAccepted = decision ? decision === "accepted" : Boolean(accepted);
@@ -137,13 +133,8 @@ export function createAcceptanceService(deps) {
     if (acceptanceId && pendingState.acceptance.id !== acceptanceId) throw new Error(`acceptance is not pending: ${acceptanceId}`);
     let projectWrite = null;
     if (isAccepted && projectRepo && pendingState.task.projectId) {
-      const project = await projectRepo.readProject(pendingState.task.projectId);
-      const deliverable = findDeliverable(project, pendingState.task.deliverableId);
-      if (deliverable?.status === "accepted") {
-        const progress = projectProgress(project);
-        const reconciliation = ops.findEventByIdempotencyKey(`project-sync-reconcile:${pendingState.acceptance.id}`)?.payload;
-        projectWrite = { ...project, beforeProgress: reconciliation?.beforeProgress ?? progress, projectProgress: reconciliation?.afterProgress ?? progress, reconciled: true };
-      } else {
+      try {
+        const project = await projectRepo.readProject(pendingState.task.projectId);
         projectWrite = await projectRepo.acceptDeliverable({
           projectId: pendingState.task.projectId,
           deliverableId: pendingState.task.deliverableId,
@@ -151,6 +142,9 @@ export function createAcceptanceService(deps) {
           expectedHash: project.contentHash,
           operationKey: `acceptance-${pendingState.acceptance.id}`,
         });
+      } catch (error) {
+        recordReconciliation({ task: pendingState.task, acceptanceId: pendingState.acceptance.id, error });
+        throw error;
       }
     }
     try {
@@ -183,7 +177,7 @@ export function createAcceptanceService(deps) {
       });
     } catch (error) {
       if (projectWrite) {
-        ops.appendEvent({ taskId, kind: "project_sync_reconciliation_required", payload: { projectId: pendingState.task.projectId, acceptanceId: pendingState.acceptance.id, contentHash: projectWrite.contentHash, beforeProgress: projectWrite.beforeProgress, afterProgress: projectWrite.projectProgress }, idempotencyKey: `project-sync-reconcile:${pendingState.acceptance.id}` });
+        recordReconciliation({ task: pendingState.task, acceptanceId: pendingState.acceptance.id, projectWrite, error });
       }
       throw error;
     }
@@ -206,6 +200,23 @@ export function createAcceptanceService(deps) {
     return { ...(event.payload?.decision || {}), acceptance, acceptanceId: acceptance?.id, task: tasks.findById(taskId), duplicate: true };
   }
 
+  function recordReconciliation({ task, acceptanceId, projectWrite = null, error }) {
+    ops.appendEvent({
+      taskId: task.id,
+      kind: "project_sync_reconciliation_required",
+      payload: {
+        projectId: task.projectId,
+        acceptanceId,
+        contentHash: projectWrite?.contentHash || null,
+        beforeProgress: projectWrite?.beforeProgress ?? null,
+        afterProgress: projectWrite?.projectProgress ?? null,
+        errorCode: error?.code || null,
+        error: String(error?.message || error),
+      },
+      idempotencyKey: `project-sync-reconcile:${acceptanceId}`,
+    });
+  }
+
   async function safeAnalyze(input) {
     try {
       const result = await analyzer.analyzeAcceptance(input);
@@ -221,14 +232,6 @@ export function createAcceptanceService(deps) {
 
 function findDeliverable(project, deliverableId) {
   return project.milestones?.flatMap((item) => item.deliverables || []).find((item) => item.id === deliverableId);
-}
-
-function projectProgress(project) {
-  return Math.round((project.milestones || []).reduce((total, milestone) => {
-    const accepted = (milestone.deliverables || []).filter((item) => item.status === "accepted")
-      .reduce((sum, item) => sum + Number(item.weight || 0), 0);
-    return total + accepted * Number(milestone.weight || 0) / 100;
-  }, 0) * 100) / 100;
 }
 
 function summarizeEvidence(evidence) {
