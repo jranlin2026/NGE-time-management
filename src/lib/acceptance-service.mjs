@@ -31,6 +31,7 @@ export function createAcceptanceService(deps) {
     let projectWrite = null;
     if (decision.status === "accepted" && projectRepo && taskForAnalysis.projectId) {
       const acceptanceId = requirePending(taskId).acceptance.id;
+      const operationKey = `acceptance-${acceptanceId}`;
       try {
         const project = await projectRepo.readProject(taskForAnalysis.projectId);
         projectWrite = await projectRepo.acceptDeliverable({
@@ -38,10 +39,10 @@ export function createAcceptanceService(deps) {
           deliverableId: taskForAnalysis.deliverableId,
           evidence: summarizeEvidence(evidence),
           expectedHash: project.contentHash,
-          operationKey: `acceptance-${acceptanceId}`,
+          operationKey,
         });
       } catch (error) {
-        recordReconciliation({ task: taskForAnalysis, acceptanceId, error });
+        recordReconciliation({ task: taskForAnalysis, acceptanceId, decision, evidence, operationKey, error });
         throw error;
       }
     }
@@ -114,7 +115,8 @@ export function createAcceptanceService(deps) {
       });
     } catch (error) {
       if (projectWrite) {
-        recordReconciliation({ task: taskForAnalysis, acceptanceId: requirePending(taskId).acceptance.id, projectWrite, error });
+        const acceptanceId = requirePending(taskId).acceptance.id;
+        recordReconciliation({ task: taskForAnalysis, acceptanceId, decision, evidence, operationKey: `acceptance-${acceptanceId}`, projectWrite, error });
       }
       throw error;
     }
@@ -132,18 +134,21 @@ export function createAcceptanceService(deps) {
     const pendingState = requirePending(taskId);
     if (acceptanceId && pendingState.acceptance.id !== acceptanceId) throw new Error(`acceptance is not pending: ${acceptanceId}`);
     let projectWrite = null;
+    const acceptedDecision = { status: "accepted", explanation, source: "user" };
+    const recoveryEvidence = pendingState.acceptance.evidence;
+    const operationKey = `acceptance-${pendingState.acceptance.id}`;
     if (isAccepted && projectRepo && pendingState.task.projectId) {
       try {
         const project = await projectRepo.readProject(pendingState.task.projectId);
         projectWrite = await projectRepo.acceptDeliverable({
           projectId: pendingState.task.projectId,
           deliverableId: pendingState.task.deliverableId,
-          evidence: summarizeEvidence(pendingState.acceptance.evidence),
+          evidence: summarizeEvidence(recoveryEvidence),
           expectedHash: project.contentHash,
-          operationKey: `acceptance-${pendingState.acceptance.id}`,
+          operationKey,
         });
       } catch (error) {
-        recordReconciliation({ task: pendingState.task, acceptanceId: pendingState.acceptance.id, error });
+        recordReconciliation({ task: pendingState.task, acceptanceId: pendingState.acceptance.id, decision: acceptedDecision, evidence: recoveryEvidence, operationKey, error });
         throw error;
       }
     }
@@ -177,10 +182,81 @@ export function createAcceptanceService(deps) {
       });
     } catch (error) {
       if (projectWrite) {
-        recordReconciliation({ task: pendingState.task, acceptanceId: pendingState.acceptance.id, projectWrite, error });
+        recordReconciliation({ task: pendingState.task, acceptanceId: pendingState.acceptance.id, decision: acceptedDecision, evidence: recoveryEvidence, operationKey, projectWrite, error });
       }
       throw error;
     }
+  }
+
+  async function resumeAcceptedWriteback(input) {
+    const payload = input?.payload || input;
+    if (payload?.decision !== "accepted") throw new Error("reconciliation is not an accepted writeback");
+    for (const field of ["acceptanceId", "taskId", "projectId", "deliverableId", "operationKey"]) {
+      if (!payload[field]) throw new Error(`reconciliation is missing ${field}`);
+    }
+    if (!Array.isArray(payload.evidence) || payload.evidence.length === 0) throw new Error("reconciliation is missing evidence");
+    if (payload.operationKey !== `acceptance-${payload.acceptanceId}`) throw new Error("reconciliation operation identity is invalid");
+    const task = tasks.findById(payload.taskId);
+    const storedAcceptance = acceptances.getAcceptance(payload.acceptanceId);
+    if (!task || task.projectId !== payload.projectId || task.deliverableId !== payload.deliverableId) {
+      throw new Error("reconciliation task identity does not match");
+    }
+    if (!storedAcceptance || storedAcceptance.taskId !== task.id || storedAcceptance.deliverableId !== task.deliverableId) {
+      throw new Error("reconciliation acceptance identity does not match");
+    }
+    if (JSON.stringify(storedAcceptance.evidence) !== JSON.stringify(payload.evidence)) {
+      throw new Error("reconciliation evidence does not match durable acceptance");
+    }
+    if (task.status === "done" && storedAcceptance.status === "accepted") {
+      return { status: "accepted", task, acceptance: storedAcceptance, acceptanceId: storedAcceptance.id, duplicate: true };
+    }
+    if (task.status !== "pending_acceptance" || storedAcceptance.status !== "pending") {
+      throw new Error("reconciliation state is not pending");
+    }
+
+    const project = await projectRepo.readProject(task.projectId);
+    const projectWrite = await projectRepo.acceptDeliverable({
+      projectId: task.projectId,
+      deliverableId: task.deliverableId,
+      evidence: summarizeEvidence(payload.evidence),
+      expectedHash: project.contentHash,
+      operationKey: payload.operationKey,
+    });
+    return transaction(() => {
+      const currentTask = tasks.findById(task.id);
+      const currentAcceptance = acceptances.getAcceptance(storedAcceptance.id);
+      if (currentTask.status === "done" && currentAcceptance.status === "accepted") {
+        return { status: "accepted", task: currentTask, acceptance: currentAcceptance, acceptanceId: currentAcceptance.id, duplicate: true };
+      }
+      if (currentTask.status !== "pending_acceptance" || currentAcceptance.status !== "pending") {
+        throw new Error("reconciliation state changed before finalize");
+      }
+      const explanation = payload.explanation || "恢复已确认的项目写回";
+      const stored = acceptances.decideAcceptance({
+        acceptanceId: currentAcceptance.id, status: "accepted", explanation, evidence: payload.evidence,
+      });
+      const transition = transitionTask({ task: currentTask, action: "accept", detail: explanation, at: now() });
+      const savedTask = tasks.update(currentTask.id, transition.patch);
+      ops.appendEvent({
+        taskId: currentTask.id, kind: transition.event.kind, payload: transition.event.payload,
+        idempotencyKey: `acceptance:${currentAcceptance.id}:transition:accepted`,
+      });
+      acceptances.saveSyncState({
+        projectId: currentTask.projectId, filePath: projectWrite.filePath, contentHash: projectWrite.contentHash,
+        lastWrittenVersion: projectWrite.projectProgress, lastError: null,
+      });
+      ops.enqueueOutbox({
+        kind: "project_progress_card", payload: progressPayload(currentTask, projectWrite, payload.evidence),
+        idempotencyKey: `project-progress:${currentAcceptance.id}`,
+      });
+      const decision = { status: "accepted", explanation, source: payload.source || "recovery" };
+      ops.appendEvent({
+        taskId: currentTask.id, kind: "acceptance_evidence_submitted",
+        payload: { evidence: payload.evidence, decision, acceptanceId: stored.id },
+        idempotencyKey: `acceptance:${currentAcceptance.id}:submission:accepted`,
+      });
+      return { ...decision, acceptance: stored, acceptanceId: stored.id, task: savedTask };
+    });
   }
 
   function requirePending(taskId) {
@@ -200,13 +276,21 @@ export function createAcceptanceService(deps) {
     return { ...(event.payload?.decision || {}), acceptance, acceptanceId: acceptance?.id, task: tasks.findById(taskId), duplicate: true };
   }
 
-  function recordReconciliation({ task, acceptanceId, projectWrite = null, error }) {
+  function recordReconciliation({ task, acceptanceId, decision, evidence, operationKey, projectWrite = null, error }) {
     ops.appendEvent({
       taskId: task.id,
       kind: "project_sync_reconciliation_required",
       payload: {
+        decision: decision?.status,
+        explanation: decision?.explanation || "",
+        source: decision?.source || "analyzer",
+        taskId: task.id,
         projectId: task.projectId,
+        deliverableId: task.deliverableId,
         acceptanceId,
+        evidence,
+        operationKey,
+        receiptPath: projectWrite?.changeLogPath || null,
         contentHash: projectWrite?.contentHash || null,
         beforeProgress: projectWrite?.beforeProgress ?? null,
         afterProgress: projectWrite?.projectProgress ?? null,
@@ -227,7 +311,7 @@ export function createAcceptanceService(deps) {
     }
   }
 
-  return { request, submit, decideByUser };
+  return { request, submit, decideByUser, resumeAcceptedWriteback };
 }
 
 function findDeliverable(project, deliverableId) {

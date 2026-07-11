@@ -191,7 +191,7 @@ export function createManagerApp(config, deps = {}) {
       tasks,
       ops,
       replan: (input) => manager.replanDay({ reason: input.reason, date: input.date, now: input.now }),
-      reconcileProjects: deps.reconcileProjects || (() => reconcileProjectWrites({ tasks, ops, projectOps, projectRepo, acceptance })),
+      reconcileProjects: deps.reconcileProjects || (() => reconcileProjectWrites({ tasks, ops, acceptance })),
     });
     const connect = deps.connectFeishu || connectFeishu;
     connector = await connect(config, { manager, tasks, ops, projectRepo, weeklyPlanning });
@@ -489,29 +489,15 @@ async function importLegacyTasksOnce(config, tasks, ops) {
   ops.setSetting("legacy_markdown_imported", { imported, at: new Date().toISOString() });
 }
 
-async function reconcileProjectWrites({ tasks, ops, projectOps, projectRepo, acceptance }) {
+async function reconcileProjectWrites({ tasks, ops, acceptance }) {
   const reconciled = [];
   for (const event of ops.listEvents({ kind: "project_sync_reconciliation_required" })) {
     const acceptanceId = event.payload?.acceptanceId;
     if (!acceptanceId || ops.findEventByIdempotencyKey(`project-sync-reconciled:${acceptanceId}`)) continue;
-    const task = tasks.findById(event.taskId);
-    const pending = projectOps.getAcceptance(acceptanceId);
-    if (!task || task.status !== "pending_acceptance" || pending?.status !== "pending") continue;
-    const project = await projectRepo.readProject(task.projectId);
-    const deliverable = project.milestones.flatMap((milestone) => milestone.deliverables || [])
-      .find((item) => item.id === task.deliverableId);
-    if (deliverable?.status !== "accepted" || !deliverable.evidence) continue;
-    const evidence = [{
-      type: /^https?:\/\//i.test(deliverable.evidence) ? "url" : "text",
-      value: deliverable.evidence,
-    }];
-    const result = await acceptance.submit({
-      taskId: task.id,
-      evidence,
-      idempotencyKey: `recovery-project-sync:${acceptanceId}`,
-    });
-    if (result.status !== "accepted" || tasks.findById(task.id)?.status !== "done") continue;
-    reconciled.push({ taskId: task.id, projectId: task.projectId, acceptanceId });
+    if (event.payload?.decision !== "accepted") continue;
+    const result = await acceptance.resumeAcceptedWriteback(event);
+    if (result.status !== "accepted" || tasks.findById(event.payload.taskId)?.status !== "done") continue;
+    reconciled.push({ taskId: event.payload.taskId, projectId: event.payload.projectId, acceptanceId });
   }
   return reconciled;
 }

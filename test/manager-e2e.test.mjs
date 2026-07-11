@@ -81,6 +81,7 @@ updated_at: 2026-07-12T08:00:00+08:00
 
   assert.equal(app.state.tasks.findById(task.id).status, "done");
   assert.equal((await app.state.projectRepo.readProject("personal-ip")).progress, 10);
+  assert.equal((await fs.readdir(path.join(root, "项目变更记录"))).filter((name) => name.endsWith(".json")).length, 1);
   await app.stop();
   await fs.rm(root, { recursive: true, force: true });
 });
