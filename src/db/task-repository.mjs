@@ -16,6 +16,11 @@ const ALLOWED_FIELDS = new Map([
   ["procrastinationCount", "procrastination_count"],
   ["analysisStatus", "analysis_status"],
   ["checkpoints", "checkpoints_json"],
+  ["projectId", "project_id"],
+  ["milestoneId", "milestone_id"],
+  ["deliverableId", "deliverable_id"],
+  ["requiresEvidence", "requires_evidence"],
+  ["impact", "impact"],
 ]);
 
 export function createTaskRepository(db, deps = {}) {
@@ -44,8 +49,9 @@ export function createTaskRepository(db, deps = {}) {
     const taskId = input.id || id();
     db.prepare(`INSERT INTO tasks
       (id,title,project,raw_input,quadrant,importance,urgency,due_at,status,next_action,done_definition,
-       estimate_minutes,blocker,procrastination_count,source_message_id,analysis_status,created_at,updated_at,checkpoints_json)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+       estimate_minutes,blocker,procrastination_count,source_message_id,analysis_status,created_at,updated_at,checkpoints_json,
+       project_id,milestone_id,deliverable_id,requires_evidence,impact)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       taskId,
       clean(input.title || rawInput).slice(0, 80),
       clean(input.project || "未归类"),
@@ -65,6 +71,11 @@ export function createTaskRepository(db, deps = {}) {
       input.createdAt || input.created || timestamp,
       timestamp,
       JSON.stringify(normalizeCheckpoints(input.checkpoints)),
+      input.projectId || null,
+      input.milestoneId || null,
+      input.deliverableId || null,
+      input.requiresEvidence ? 1 : 0,
+      clean(input.impact || "normal"),
     );
     return findById(taskId);
   }
@@ -115,7 +126,11 @@ export function createTaskRepository(db, deps = {}) {
       const clause = entries.map(([key]) => `${ALLOWED_FIELDS.get(key)} = ?`).join(", ");
       const result = db
         .prepare(`UPDATE tasks SET ${clause}, updated_at = ? WHERE id = ?`)
-        .run(...entries.map(([key, value]) => key === "checkpoints" ? JSON.stringify(normalizeCheckpoints(value)) : value), now(), taskId);
+        .run(...entries.map(([key, value]) => {
+          if (key === "checkpoints") return JSON.stringify(normalizeCheckpoints(value));
+          if (key === "requiresEvidence") return value ? 1 : 0;
+          return value;
+        }), now(), taskId);
       if (!result.changes) throw new Error(`task not found: ${taskId}`);
       return findById(taskId);
     },
@@ -166,6 +181,11 @@ function mapTask(row) {
     sourceMessageId: row.source_message_id,
     analysisStatus: row.analysis_status,
     checkpoints: parseCheckpoints(row.checkpoints_json),
+    projectId: row.project_id,
+    milestoneId: row.milestone_id,
+    deliverableId: row.deliverable_id,
+    requiresEvidence: Boolean(row.requires_evidence),
+    impact: row.impact,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

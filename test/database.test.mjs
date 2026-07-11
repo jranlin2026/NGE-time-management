@@ -44,3 +44,20 @@ test("rolls back a failed transaction", () => {
   assert.equal(db.prepare("SELECT count(*) AS count FROM settings").get().count, 0);
   db.close();
 });
+
+test("migration three adds project execution tables and task columns", () => {
+  const db = openDatabase(":memory:");
+  const columns = db.prepare("PRAGMA table_info(tasks)").all().map((row) => row.name);
+
+  for (const name of ["project_id", "milestone_id", "deliverable_id", "requires_evidence", "impact"]) {
+    assert.ok(columns.includes(name), `missing task column ${name}`);
+  }
+  for (const table of ["weekly_plans", "task_acceptances", "project_sync_state"]) {
+    assert.ok(
+      db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table),
+      `missing table ${table}`,
+    );
+  }
+  assert.ok(db.prepare("SELECT 1 FROM schema_migrations WHERE version = 3").get());
+  db.close();
+});

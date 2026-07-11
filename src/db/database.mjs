@@ -44,11 +44,35 @@ const MIGRATION_2 = `
 ALTER TABLE tasks ADD COLUMN checkpoints_json TEXT NOT NULL DEFAULT '[]';
 `;
 
+const MIGRATION_3 = `
+ALTER TABLE tasks ADD COLUMN project_id TEXT;
+ALTER TABLE tasks ADD COLUMN milestone_id TEXT;
+ALTER TABLE tasks ADD COLUMN deliverable_id TEXT;
+ALTER TABLE tasks ADD COLUMN requires_evidence INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN impact TEXT NOT NULL DEFAULT 'normal';
+CREATE TABLE weekly_plans (
+  week_id TEXT NOT NULL, version INTEGER NOT NULL, markdown_path TEXT NOT NULL,
+  content_hash TEXT NOT NULL, status TEXT NOT NULL, plan_json TEXT NOT NULL,
+  created_at TEXT NOT NULL, confirmed_at TEXT, confirmation_event_id TEXT UNIQUE,
+  PRIMARY KEY(week_id, version)
+);
+CREATE TABLE task_acceptances (
+  id TEXT PRIMARY KEY, task_id TEXT NOT NULL, deliverable_id TEXT NOT NULL,
+  evidence_json TEXT NOT NULL, status TEXT NOT NULL, explanation TEXT NOT NULL,
+  idempotency_key TEXT UNIQUE, created_at TEXT NOT NULL, decided_at TEXT,
+  FOREIGN KEY(task_id) REFERENCES tasks(id)
+);
+CREATE TABLE project_sync_state (
+  project_id TEXT PRIMARY KEY, file_path TEXT NOT NULL, content_hash TEXT NOT NULL,
+  last_written_version INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_at TEXT NOT NULL
+);
+`;
+
 export function openDatabase(filePath) {
   if (filePath !== ":memory:") fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const db = new DatabaseSync(filePath);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-  const migrations = [MIGRATION_1, MIGRATION_2];
+  const migrations = [MIGRATION_1, MIGRATION_2, MIGRATION_3];
   for (let index = 0; index < migrations.length; index += 1) {
     const version = index + 1;
     const hasMigrations = db

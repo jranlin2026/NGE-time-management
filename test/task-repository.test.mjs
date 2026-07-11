@@ -53,6 +53,50 @@ test("updates only allowed task columns", () => {
   db.close();
 });
 
+test("persists, maps, and updates project execution fields", () => {
+  const { db, tasks } = setup();
+  const created = tasks.create({
+    id: "task-project",
+    rawInput: "完成首条口播",
+    projectId: "personal-ip",
+    milestoneId: "m1",
+    deliverableId: "d1",
+    requiresEvidence: true,
+    impact: "high",
+  });
+
+  assert.equal(created.projectId, "personal-ip");
+  assert.equal(created.milestoneId, "m1");
+  assert.equal(created.deliverableId, "d1");
+  assert.equal(created.requiresEvidence, true);
+  assert.equal(created.impact, "high");
+
+  const updated = tasks.update(created.id, {
+    projectId: "product",
+    milestoneId: "m2",
+    deliverableId: "d2",
+    requiresEvidence: false,
+    impact: "normal",
+  });
+  assert.deepEqual(
+    {
+      projectId: updated.projectId,
+      milestoneId: updated.milestoneId,
+      deliverableId: updated.deliverableId,
+      requiresEvidence: updated.requiresEvidence,
+      impact: updated.impact,
+    },
+    {
+      projectId: "product",
+      milestoneId: "m2",
+      deliverableId: "d2",
+      requiresEvidence: false,
+      impact: "normal",
+    },
+  );
+  db.close();
+});
+
 test("persists and completes task checkpoints", () => {
   const { db, tasks } = setup();
   const created = tasks.create({
