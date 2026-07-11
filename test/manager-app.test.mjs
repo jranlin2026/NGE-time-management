@@ -3,7 +3,7 @@ import test from "node:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createManagerApp, renderCardActionResponse } from "../src/manager-app.mjs";
+import { createCardActionHandler, createManagerApp, renderCardActionResponse } from "../src/manager-app.mjs";
 
 test("start callback replaces the source card with a doing-state card", () => {
   const response = renderCardActionResponse(
@@ -65,4 +65,55 @@ test("starts locally, seeds seven days of fixed reminders, recovers, and stops c
   assert.deepEqual(app.state.settings.projectMinimums, { "个人IP": 2, "极享OS": 2 });
   assert.deepEqual(app.state.settings.projectWindows["个人IP"], [["10:00", "12:00"], ["14:00", "16:00"]]);
   await app.stop();
+});
+
+test("weekly confirmation awaits persistence and replaces the source card", async () => {
+  let confirmed = false;
+  const callback = createCardActionHandler({
+    manager: { handleAction: async () => ({}) },
+    projectRepo: {},
+    weeklyPlanning: {
+      confirm: async ({ weekId, version, eventId }) => {
+        await Promise.resolve();
+        confirmed = true;
+        assert.deepEqual({ weekId, version, eventId }, { weekId: "2026-W29", version: 2, eventId: "card:evt-confirm" });
+        return { weekId, version, status: "confirmed" };
+      },
+    },
+  });
+
+  const response = await callback({ action: "confirm_weekly_plan", weekId: "2026-W29", version: 2, idempotencyKey: "card:evt-confirm" });
+  assert.equal(confirmed, true);
+  assert.match(JSON.stringify(response.card), /周计划已确认/);
+});
+
+test("project setup confirmation activates every source draft and replaces the source card", async () => {
+  const calls = [];
+  const callback = createCardActionHandler({
+    manager: { handleAction: async () => ({}) },
+    weeklyPlanning: {},
+    projectRepo: {
+      confirmDraft: async (projectId, contentHash) => {
+        calls.push([projectId, contentHash]);
+        return { id: projectId, name: projectId === "personal-ip" ? "个人IP" : "极享OS", status: "active" };
+      },
+    },
+  });
+  const projects = [{ projectId: "personal-ip", contentHash: "hash-1" }, { projectId: "jixiang-os", contentHash: "hash-2" }];
+
+  const response = await callback({ action: "confirm_project_setup", projects, idempotencyKey: "card:evt-projects" });
+
+  assert.deepEqual(calls, [["personal-ip", "hash-1"], ["jixiang-os", "hash-2"]]);
+  assert.match(JSON.stringify(response.card), /项目初始设置已确认/);
+});
+
+test("weekly adjustment prompts for a concrete reason without confirming", async () => {
+  let confirmations = 0;
+  const callback = createCardActionHandler({
+    manager: { handleAction: async () => ({}) }, projectRepo: {},
+    weeklyPlanning: { confirm: async () => { confirmations += 1; } },
+  });
+  const response = await callback({ action: "adjust_weekly_plan", weekId: "2026-W29", version: 1 });
+  assert.match(response.toast.content, /调整周计划｜具体原因/);
+  assert.equal(confirmations, 0);
 });

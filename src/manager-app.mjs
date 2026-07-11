@@ -4,7 +4,11 @@ import { openDatabase, withTransaction } from "./db/database.mjs";
 import { backupDatabase } from "./db/backup.mjs";
 import { createTaskRepository } from "./db/task-repository.mjs";
 import { createOperationsRepository } from "./db/operations-repository.mjs";
+import { createProjectOperationsRepository } from "./db/project-operations-repository.mjs";
 import { createCodexAnalyzer } from "./lib/codex-analyzer.mjs";
+import { createProjectMarkdownRepository } from "./lib/project-markdown-repository.mjs";
+import { createWeeklyPlanRepository } from "./lib/weekly-plan-repository.mjs";
+import { createWeeklyPlanningService } from "./lib/weekly-planning-service.mjs";
 import { createManagerService } from "./lib/manager-service.mjs";
 import { createReminderEngine } from "./lib/reminder-engine.mjs";
 import { createOutboxWorker } from "./lib/outbox-worker.mjs";
@@ -15,7 +19,11 @@ import {
   renderCurrentTaskCard,
   renderDailyPlanCard,
   renderInterventionCard,
+  renderConfirmedProjectSetupCard,
+  renderConfirmedWeeklyPlanCard,
+  renderProjectSetupCard,
   renderReviewCard,
+  renderWeeklyPlanCard,
 } from "./lib/feishu-cards.mjs";
 import {
   extractCardAction,
@@ -39,6 +47,9 @@ export function createManagerApp(config, deps = {}) {
   const clearIntervalFn = deps.clearInterval || globalThis.clearInterval;
   const tasks = createTaskRepository(db);
   const ops = createOperationsRepository(db);
+  const projectOps = createProjectOperationsRepository(db);
+  const projectRepo = deps.projectRepo || createProjectMarkdownRepository({ kbDir: config.kbDir });
+  const weeklyPlanRepo = deps.weeklyPlanRepo || createWeeklyPlanRepository({ kbDir: config.kbDir });
   if (!config.feishuReceiveId) {
     const destination = ops.getSetting("feishu_receive_destination");
     config.feishuReceiveId = destination?.receiveId || ops.getSetting("feishu_receive_id") || "";
@@ -46,6 +57,9 @@ export function createManagerApp(config, deps = {}) {
   }
   const settings = loadManagerSettings(config, ops);
   const analyzer = deps.analyzer || createCodexAnalyzer(config);
+  const weeklyPlanning = deps.weeklyPlanning || createWeeklyPlanningService({
+    projectRepo, weeklyPlanRepo, projectOps, ops, analyzer,
+  });
   let manager;
 
   async function runDailyReview(date) {
@@ -142,6 +156,15 @@ export function createManagerApp(config, deps = {}) {
 
   async function start() {
     if (started) return;
+    const setup = await projectRepo.ensureDraftTemplates(PROJECT_SPECS);
+    const draftProjects = setup.projects.filter((project) => project.status === "draft");
+    if (draftProjects.length) {
+      ops.enqueueOutbox({
+        kind: "project_setup_card",
+        payload: { projects: draftProjects },
+        idempotencyKey: "project-setup-card:initial",
+      });
+    }
     await importLegacyTasksOnce(config, tasks, ops);
     seedFixedReminders({ now: clock.now(), config, settings, ops });
     const today = localDate(clock.now(), settings.timezone);
@@ -153,7 +176,7 @@ export function createManagerApp(config, deps = {}) {
       replan: (input) => manager.replanDay({ reason: input.reason, date: input.date, now: input.now }),
     });
     const connect = deps.connectFeishu || connectFeishu;
-    connector = await connect(config, { manager, tasks, ops });
+    connector = await connect(config, { manager, tasks, ops, projectRepo, weeklyPlanning });
     timers.push(intervalFn(() => runSafely("reminder poll", () => reminderEngine.processDue()), 30_000));
     timers.push(intervalFn(() => runSafely("outbox poll", () => outboxWorker.flush()), 10_000));
     started = true;
@@ -170,11 +193,11 @@ export function createManagerApp(config, deps = {}) {
   return {
     start,
     stop,
-    state: { db, tasks, ops, manager, reminderEngine, outboxWorker, settings },
+    state: { db, tasks, ops, projectOps, projectRepo, weeklyPlanRepo, weeklyPlanning, manager, reminderEngine, outboxWorker, settings },
   };
 }
 
-export async function connectFeishu(config, { manager, tasks, ops }) {
+export async function connectFeishu(config, { manager, tasks, ops, projectRepo, weeklyPlanning }) {
   if (!config.feishuAppId || !config.feishuAppSecret) {
     throw new Error("Missing FEISHU_APP_ID or FEISHU_APP_SECRET");
   }
@@ -183,6 +206,7 @@ export async function connectFeishu(config, { manager, tasks, ops }) {
     verificationToken: config.feishuVerificationToken || undefined,
     encryptKey: config.feishuEncryptKey || undefined,
   });
+  const handleCardAction = createCardActionHandler({ manager, projectRepo, weeklyPlanning });
   dispatcher.register({
     "im.message.receive_v1": async (data) => {
       const message = extractMessageText(data);
@@ -221,10 +245,9 @@ export async function connectFeishu(config, { manager, tasks, ops }) {
     "card.action.trigger": async (data) => {
       const extracted = extractCardAction(data);
       const action = extracted ? normalizeManagerAction(extracted) : null;
-      if (action?.action === "start") {
+      if (["start", "confirm_project_setup", "confirm_weekly_plan", "adjust_weekly_plan"].includes(action?.action)) {
         try {
-          const result = await manager.handleAction(action);
-          return renderCardActionResponse(action, result);
+          return await handleCardAction(action);
         } catch (error) {
           console.error(`card action failed: ${error.message}`);
           return { toast: { type: "error", content: `开始失败：${error.message}` } };
@@ -254,6 +277,33 @@ export async function connectFeishu(config, { manager, tasks, ops }) {
       await wsClient.stop?.();
       await wsClient.close?.();
     },
+  };
+}
+
+export function createCardActionHandler({ manager, projectRepo, weeklyPlanning }) {
+  return async function handleCardAction(action) {
+    if (action.action === "confirm_weekly_plan") {
+      const plan = await weeklyPlanning.confirm({
+        weekId: String(action.weekId).trim(),
+        version: Number(action.version),
+        eventId: action.idempotencyKey,
+      });
+      return { toast: { type: "success", content: "周计划已确认" }, card: renderConfirmedWeeklyPlanCard(plan) };
+    }
+    if (action.action === "confirm_project_setup") {
+      const confirmed = [];
+      for (const identity of action.projects || []) {
+        const current = await projectRepo.readProject?.(identity.projectId);
+        if (current?.status === "active") confirmed.push(current);
+        else confirmed.push(await projectRepo.confirmDraft(identity.projectId, identity.contentHash));
+      }
+      return { toast: { type: "success", content: "项目初始设置已确认" }, card: renderConfirmedProjectSetupCard(confirmed) };
+    }
+    if (action.action === "adjust_weekly_plan") {
+      return { toast: { type: "info", content: "请回复：调整周计划｜具体原因" } };
+    }
+    const result = await manager.handleAction(action);
+    return renderCardActionResponse(action, result);
   };
 }
 
@@ -322,6 +372,8 @@ async function deliverOutbox(config, row, { tasks, ops, settings }) {
 
 function cardForOutbox(row, { tasks, settings }) {
   if (row.payload.card) return row.payload.card;
+  if (row.kind === "weekly_plan_card") return renderWeeklyPlanCard(row.payload);
+  if (row.kind === "project_setup_card") return renderProjectSetupCard(row.payload);
   if (row.kind === "current_task_card") {
     return renderCurrentTaskCard({ task: row.payload.task, startsAt: "按计划", endsAt: "完成为止" });
   }
@@ -341,6 +393,21 @@ function cardForOutbox(row, { tasks, settings }) {
   }
   return null;
 }
+
+const PROJECT_SPECS = [
+  {
+    projectId: "personal-ip", name: "个人IP", priority: 1,
+    milestoneId: "content-validation", milestoneName: "内容验证",
+    deliverableId: "first-content-result", deliverableName: "完成首个可验收内容成果",
+    goal: "稳定产出并验证个人IP内容。",
+  },
+  {
+    projectId: "jixiang-os", name: "极享OS", priority: 2,
+    milestoneId: "system-validation", milestoneName: "系统验证",
+    deliverableId: "first-system-result", deliverableName: "完成首个可验收系统成果",
+    goal: "持续完善并验证极享OS。",
+  },
+];
 
 function textForOutbox(row) {
   if (row.kind === "task_ack") return `已入池：${row.payload.title}\n${row.payload.text}`;

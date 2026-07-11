@@ -21,6 +21,10 @@ export function extractCardAction(input = {}) {
 export function normalizeManagerAction(input) {
   if (typeof input === "string") {
     const text = input.trim();
+    const weeklyAdjustment = text.match(/^调整周计划\s*[｜|]\s*(.+)$/);
+    if (weeklyAdjustment) {
+      return { action: "adjust_weekly_plan", taskId: "", query: "", detail: weeklyAdjustment[1].trim(), idempotencyKey: "" };
+    }
     const deferWithReason = text.match(/^推迟\s*30\s*分钟[:：]\s*(.+?)\s*[｜|]\s*(.+)$/);
     if (deferWithReason) {
       return { action: "defer_30", taskId: "", query: deferWithReason[1].trim(), detail: deferWithReason[2].trim(), idempotencyKey: "" };
@@ -39,6 +43,9 @@ export function normalizeManagerAction(input) {
   return {
     action: value.action,
     taskId: value.taskId || "",
+    ...(value.weekId === undefined ? {} : { weekId: String(value.weekId).trim() }),
+    ...(value.version === undefined ? {} : { version: Number(value.version) }),
+    ...(value.projects === undefined ? {} : { projects: value.projects }),
     ...(value.checkpointIndex === undefined ? {} : { checkpointIndex: value.checkpointIndex }),
     query: value.query || "",
     detail: value.detail || "",

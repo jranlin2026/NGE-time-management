@@ -67,6 +67,39 @@ export function renderReviewCard(summary) {
   ]);
 }
 
+export function renderWeeklyPlanCard({ plan, weekId, version }) {
+  const outcomes = plan.outcomes?.length ? plan.outcomes.map((item) => `- ${item}`).join("\n") : "-暂无";
+  const tasks = plan.tasks?.length
+    ? plan.tasks.map((task) => `- **${task.projectName}｜${task.title}**\n  完成标准：${task.completionStandard}`).join("\n")
+    : "-暂无任务";
+  return card(`周计划待确认｜${weekId} v${version}`, "orange", [
+    markdown(`**本周成果**\n${outcomes}\n\n**任务**\n${tasks}`),
+    button("确认周计划", "confirm_weekly_plan", "", "primary", { weekId, version }),
+    button("申请调整", "adjust_weekly_plan", "", "default", { weekId, version }),
+  ]);
+}
+
+export function renderConfirmedWeeklyPlanCard(plan) {
+  return card("周计划已确认", "green", [
+    markdown(`**${plan.weekId} v${plan.version}**\n计划已生效。`),
+  ]);
+}
+
+export function renderProjectSetupCard({ projects }) {
+  return card("项目初始设置待确认", "orange", [
+    markdown(projects.map((project) => `- **${project.name}**（${project.status}）`).join("\n")),
+    button("确认项目设置", "confirm_project_setup", "", "primary", {
+      projects: projects.map((project) => ({ projectId: project.id, contentHash: project.contentHash })),
+    }),
+  ]);
+}
+
+export function renderConfirmedProjectSetupCard(projects) {
+  return card("项目初始设置已确认", "green", [
+    markdown(projects.map((project) => `- **${project.name}**（已启用）`).join("\n")),
+  ]);
+}
+
 function card(title, template, elements) {
   return {
     schema: "2.0",

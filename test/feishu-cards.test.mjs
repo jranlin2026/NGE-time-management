@@ -4,7 +4,9 @@ import {
   renderCurrentTaskCard,
   renderDailyPlanCard,
   renderInterventionCard,
+  renderProjectSetupCard,
   renderReviewCard,
+  renderWeeklyPlanCard,
 } from "../src/lib/feishu-cards.mjs";
 import { extractCardAction, normalizeManagerAction } from "../src/lib/feishu-messages.mjs";
 
@@ -91,5 +93,45 @@ test("extracts a Feishu card event id and value", () => {
   }), {
     value: { action: "complete", taskId: "task-1" },
     eventId: "evt-2",
+  });
+});
+
+function allActions(card) {
+  const actions = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) return value.forEach(visit);
+    if (!value || typeof value !== "object") return;
+    if (value.tag === "button") actions.push(value.behaviors[0].value.action);
+    Object.values(value).forEach(visit);
+  };
+  visit(card);
+  return actions;
+}
+
+test("weekly plan card exposes confirm and adjustment actions with normalized identity", () => {
+  const card = renderWeeklyPlanCard({
+    weekId: "2026-W29",
+    version: 1,
+    plan: { outcomes: ["发布首条视频"], tasks: [{ projectName: "个人IP", title: "发布视频", completionStandard: "链接可访问" }] },
+  });
+  assert.deepEqual(allActions(card), ["confirm_weekly_plan", "adjust_weekly_plan"]);
+  assert.deepEqual(card.body.elements.at(-2).behaviors[0].value, { action: "confirm_weekly_plan", taskId: "", weekId: "2026-W29", version: 1 });
+});
+
+test("project setup card exposes one confirmation action", () => {
+  const card = renderProjectSetupCard({ projects: [{ id: "personal-ip", name: "个人IP", status: "draft", contentHash: "hash-1" }] });
+  assert.deepEqual(allActions(card), ["confirm_project_setup"]);
+  assert.deepEqual(card.body.elements.at(-1).behaviors[0].value.projects, [{ projectId: "personal-ip", contentHash: "hash-1" }]);
+});
+
+test("normalizes weekly card identity and adjustment text", () => {
+  assert.deepEqual(normalizeManagerAction({
+    value: { action: "confirm_weekly_plan", weekId: " 2026-W29 ", version: "2" }, eventId: "evt-weekly",
+  }), {
+    action: "confirm_weekly_plan", taskId: "", weekId: "2026-W29", version: 2,
+    query: "", detail: "", idempotencyKey: "card:evt-weekly",
+  });
+  assert.deepEqual(normalizeManagerAction("调整周计划｜任务太多"), {
+    action: "adjust_weekly_plan", taskId: "", query: "", detail: "任务太多", idempotencyKey: "",
   });
 });
