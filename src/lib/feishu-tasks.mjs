@@ -92,6 +92,14 @@ export function buildTaskUpdateBody(patch) {
     };
     updateFields.push("due");
   }
+  if (patch.startAt !== undefined) {
+    task.start = patch.startAt ? { timestamp: String(new Date(patch.startAt).getTime()), is_all_day: false } : null;
+    updateFields.push("start");
+  }
+  if (patch.dueAt !== undefined) {
+    task.due = patch.dueAt ? { timestamp: String(new Date(patch.dueAt).getTime()), is_all_day: false } : null;
+    updateFields.push("due");
+  }
   if (patch.completedAt !== undefined) {
     task.completed_at = patch.completedAt ? String(new Date(patch.completedAt).getTime()) : "0";
     updateFields.push("completed_at");
@@ -105,6 +113,20 @@ export async function createSubtask(config, parentGuid, task) {
     method: "POST",
     body,
   });
+}
+
+export async function listTasklistTasks(config, options = {}, deps = {}) {
+  if (!config.feishuTasklistGuid) throw new Error("missing FEISHU_TASKLIST_GUID");
+  return listPaginated(
+    config,
+    `/task/v2/tasklists/${encodeURIComponent(config.feishuTasklistGuid)}/tasks`,
+    options,
+    deps,
+  );
+}
+
+export async function listSubtasks(config, parentGuid, deps = {}) {
+  return listPaginated(config, `/task/v2/tasks/${encodeURIComponent(parentGuid)}/subtasks`, {}, deps);
 }
 
 export async function createTasklist(config, name = "N哥时间管理大师") {
@@ -136,7 +158,7 @@ export async function addTasklistMember(config, tasklistGuid, memberId, options 
   );
 }
 
-function buildTaskBody(config, task, options = {}) {
+export function buildTaskBody(config, task, options = {}) {
   const body = {
     summary: task.summary,
     description: task.description || "",
@@ -149,7 +171,14 @@ function buildTaskBody(config, task, options = {}) {
     };
   }
 
-  if (config.feishuTasklistGuid) {
+  if (task.startAt) {
+    body.start = { timestamp: String(new Date(task.startAt).getTime()), is_all_day: false };
+  }
+  if (task.dueAt) {
+    body.due = { timestamp: String(new Date(task.dueAt).getTime()), is_all_day: false };
+  }
+
+  if (options.includeTasklist !== false && config.feishuTasklistGuid) {
     body.tasklists = [
       {
         tasklist_guid: config.feishuTasklistGuid,
@@ -168,6 +197,23 @@ function buildTaskBody(config, task, options = {}) {
   }
 
   return body;
+}
+
+async function listPaginated(config, basePath, options, deps) {
+  const request = deps.request || feishuRequest;
+  const items = [];
+  let pageToken = options.pageToken || "";
+  do {
+    const query = new URLSearchParams({ page_size: "100", user_id_type: options.userIdType || "open_id" });
+    if (pageToken) query.set("page_token", pageToken);
+    const response = await request(config, `${basePath}?${query}`);
+    const data = response?.data || {};
+    items.push(...(data.items || data.tasks || []));
+    if (!data.has_more) break;
+    pageToken = data.page_token;
+    if (!pageToken) throw new Error("Feishu pagination response omitted page_token");
+  } while (true);
+  return items;
 }
 
 function renderParentDescription(picked) {
