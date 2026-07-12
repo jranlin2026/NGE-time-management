@@ -96,11 +96,15 @@ CREATE INDEX idx_inbound_pending ON inbound_messages(chat_id, processed_run_key,
 CREATE INDEX idx_feishu_parent ON feishu_task_links(parent_guid);
 `;
 
+const MIGRATION_5 = `
+ALTER TABLE automation_runs ADD COLUMN analysis_json TEXT;
+`;
+
 export function openDatabase(filePath) {
   if (filePath !== ":memory:") fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const db = new DatabaseSync(filePath);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-  const migrations = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4];
+  const migrations = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5];
   for (let index = 0; index < migrations.length; index += 1) {
     const version = index + 1;
     const hasMigrations = db

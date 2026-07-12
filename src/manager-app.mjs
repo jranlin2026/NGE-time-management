@@ -571,7 +571,14 @@ export async function reconcileProjectWrites({ tasks, ops, acceptance }) {
     try {
       const result = await acceptance.resumeAcceptedWriteback(event);
       if (result.status !== "accepted" || tasks.findById(event.payload.taskId)?.status !== "done") continue;
-      reconciled.push({ taskId: event.payload.taskId, projectId: event.payload.projectId, acceptanceId });
+      const reconciledPayload = { taskId: event.payload.taskId, projectId: event.payload.projectId, acceptanceId };
+      ops.appendEvent({
+        taskId: event.payload.taskId || null,
+        kind: "project_sync_reconciled",
+        payload: reconciledPayload,
+        idempotencyKey: `project-sync-reconciled:${acceptanceId}`,
+      });
+      reconciled.push(reconciledPayload);
     } catch (error) {
       ops.appendEvent({
         taskId: event.payload?.taskId || event.taskId || null,

@@ -57,6 +57,31 @@ test("reconciles stranded project writes once before node processing", async () 
   assert.ok(fixture.calls.indexOf("reconcile-projects") < fixture.calls.indexOf("claim"));
 });
 
+test("failed-run retry reuses persisted analysis despite analyzer reorder and regroup", async () => {
+  let analyzerCalls = 0;
+  let failPush = true;
+  const created = new Set();
+  const fixture = runnerFixture({
+    messages: [message("om-1", "任务一"), message("om-2", "任务二")],
+    persistAnalysis: true,
+    analyze: async () => {
+      analyzerCalls += 1;
+      return analyzerCalls === 1
+        ? { items: [{ messageIds: ["om-1"], disposition: "schedule_today" }, { messageIds: ["om-2"], disposition: "schedule_today" }] }
+        : { items: [{ messageIds: ["om-2", "om-1"], disposition: "schedule_today" }] };
+    },
+    applyPolicy: async ({ analysis }) => {
+      for (const item of analysis.items) created.add([...item.messageIds].sort().join("+"));
+      return { replyRequired: false, reply: "", actions: [], schedule: { version: 1, blocks: [] } };
+    },
+    pushSchedule: async () => { if (failPush) { failPush = false; throw new Error("after local creation"); } },
+  });
+  await assert.rejects(fixture.runner.run({ now: "2026-07-13T09:00:00+08:00", forcedNode: "09:00" }), /after local creation/);
+  await fixture.runner.run({ now: "2026-07-13T09:00:00+08:00", forcedNode: "09:00" });
+  assert.equal(analyzerCalls, 1);
+  assert.deepEqual([...created].sort(), ["om-1", "om-2"]);
+});
+
 test("refuses to queue a private summary without the owner open_id", async () => {
   const fixture = runnerFixture({ messages: [message("om-1", "新增任务")], managerUserId: "" });
   await assert.rejects(() => fixture.runner.run({ now: "2026-07-13T09:00:00+08:00", forcedNode: "09:00" }), /owner open_id/);
@@ -83,19 +108,16 @@ test("does not finalize when strict private summary delivery is deferred for ret
   db.close();
 });
 
-test("applies remote progress before analyzer reads local context", async () => {
-  let localCompleted = false;
+test("persists batch analysis before applying remote progress side effects", async () => {
+  const order = [];
   const fixture = runnerFixture({
     messages: [message("om-1", "进度如何")],
-    reconcileRemoteProgress: async () => { localCompleted = true; return { actions: [{ type: "checkpoint_completed" }], replyParts: ["进度已同步"], changed: true }; },
-    buildAnalysisContext: () => ({ localCompleted }),
-    analyze: async ({ context }) => {
-      assert.equal(localCompleted, true);
-      assert.equal(context.localCompleted, true);
-      return { items: [] };
-    },
+    persistAnalysis: true,
+    reconcileRemoteProgress: async () => { order.push("reconcile"); return { actions: [{ type: "checkpoint_completed" }], replyParts: ["进度已同步"], changed: true }; },
+    analyze: async ({ context }) => { order.push("analyze"); assert.ok(context.remoteProgress); return { items: [] }; },
   });
   await fixture.runner.run({ now: "2026-07-13T15:00:00+08:00", forcedNode: "15:00" });
+  assert.deepEqual(order, ["analyze", "reconcile"]);
 });
 
 test("historical logical time still claims a lease from the execution clock", async () => {
@@ -201,7 +223,7 @@ test("pre-recorded pending messages remain isolated by each catch-up cutoff", as
   assert.deepEqual(fixture.finalizedThrough, ["2026-07-12T16:00:00.000Z", "2026-07-13T00:00:00.000Z", "2026-07-13T01:00:00.000Z"]);
 });
 
-function runnerFixture({ messages = [], pendingMessages = [], pollMessages, completedNodes = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, reconcileProjectWrites, buildAnalysisContext, analyze, executionNow, onClaimLock } = {}) {
+function runnerFixture({ messages = [], pendingMessages = [], pollMessages, completedNodes = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, reconcileProjectWrites, buildAnalysisContext, analyze, applyPolicy, pushSchedule, persistAnalysis = false, executionNow, onClaimLock } = {}) {
   const calls = [];
   const claims = [];
   const polls = [];
@@ -209,12 +231,15 @@ function runnerFixture({ messages = [], pendingMessages = [], pollMessages, comp
   const pending = [...pendingMessages];
   const finalizedThrough = [];
   let cursor = null;
+  let savedAnalysis = null;
   const runtime = {
     claimLock: (input) => { calls.push("lock"); onClaimLock?.(input); return !lockHeld; },
     releaseLock: () => { calls.push("unlock"); },
     claimRun: (input) => { calls.push("claim"); claims.push(input); return { claimed: true, claimToken: "claim-1" }; },
     failRun: () => { calls.push("fail"); },
     completeRun: () => { calls.push("complete"); },
+    loadRunAnalysis: persistAnalysis ? () => savedAnalysis : undefined,
+    saveRunAnalysis: persistAnalysis ? (_runKey, _claimToken, analysis) => { calls.push("save-analysis"); savedAnalysis ||= analysis; return savedAnalysis; } : undefined,
     getMessageCursor: () => cursor ? { polledThrough: cursor } : null,
     recordInbound: (items) => { calls.push("record"); pending.push(...items.filter((item) => !pending.some((old) => old.messageId === item.messageId))); },
     listPendingInbound: (_chatId, options = {}) => options.through
@@ -235,12 +260,12 @@ function runnerFixture({ messages = [], pendingMessages = [], pollMessages, comp
     pollMessages: async (input) => { polls.push(input); return pollMessages ? pollMessages(input) : messages; },
     taskSync: {
       pullProgress: async () => ({ completedTasks: [], completedCheckpoints: healthyProgress ? [{ localTaskId: "done", checkpointIndex: 0 }] : [] }),
-      pushSchedule: async () => { calls.push("push"); if (syncError) throw syncError; return { tasks: [] }; },
+      pushSchedule: async () => { calls.push("push"); if (pushSchedule) return pushSchedule(); if (syncError) throw syncError; return { tasks: [] }; },
     },
     analyzer: { analyzeCheckpointMessages: analyze || (async () => ({ items: messages.map((item) => ({ messageIds: [item.messageId] })) })) },
     policy: {
       reconcileRemoteProgress: reconcileRemoteProgress || (async () => ({ actions: [], replyParts: [], changed: false })),
-      apply: async () => ({ replyRequired: messages.length > 0, reply: messages.length ? "已合并处理" : "", actions: [], schedule: { version: 3, blocks: [] } }),
+      apply: applyPolicy || (async () => ({ replyRequired: messages.length > 0, reply: messages.length ? "已合并处理" : "", actions: [], schedule: { version: 3, blocks: [] } })),
     },
     ops: { enqueueOutbox: (item) => { calls.push("enqueue"); outbox.push(item); return item; } },
     outboxWorker: { flush: async () => { calls.push("flush"); } },

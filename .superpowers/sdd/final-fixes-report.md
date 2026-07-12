@@ -26,3 +26,15 @@ Implemented all eight final whole-branch review fixes without starting, stopping
 
 - Node reports its existing experimental SQLite warning; it does not fail tests.
 - No live Feishu or manager-service restart was performed, by instruction.
+
+## Remaining Final Review Fixes
+
+- Evidence submissions no longer persist `evidence.text` or links authored by the model. Policy reconstructs normalized text, validated URLs, and opaque Feishu image/file references exclusively from the exact referenced inbound messages. Regression coverage proves a hallucinated “已正式发布并验收” claim is discarded.
+- Migration 5 adds `automation_runs.analysis_json`. The repository saves the first accepted analysis under the active claim token and preserves it across failed-run reclaim. The runner saves or loads this snapshot before any policy/task side effect, so analyzer reorder or regroup on a hypothetical retry cannot create a second task interpretation; the analyzer is called once.
+- Direct one-shot project reconciliation now appends the same idempotent `project-sync-reconciled:${acceptanceId}` event as resident recovery. Repeated checkpoints skip already recovered acceptances.
+
+### TDD and Verification
+
+- RED: four focused failures demonstrated model-authored evidence persistence, missing analysis snapshot APIs, repeated analyzer invocation after failure, and repeated direct reconciliation.
+- Focused GREEN: `79` passed, `0` failed.
+- Final full-suite verification: `333` passed, `0` failed, `0` skipped.

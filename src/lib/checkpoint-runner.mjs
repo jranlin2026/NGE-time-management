@@ -54,14 +54,18 @@ export function createCheckpointRunner(deps) {
           await deps.runtime.recordInbound(inbound);
           const pending = await deps.runtime.listPendingInbound(chatId, { through: pollThrough });
           const remoteProgress = await deps.taskSync.pullProgress({ date: workDate });
-          const progress = await deps.policy.reconcileRemoteProgress({
-            node, workDate, messages: pending, remoteProgress,
-          });
           const analysisContext = await deps.buildAnalysisContext?.({
             node, workDate, messages: pending, remoteProgress,
           }) || {};
-          const analysis = await deps.analyzer.analyzeCheckpointMessages({
-            node, workDate, messages: pending, context: { ...analysisContext, remoteProgress },
+          let analysis = await deps.runtime.loadRunAnalysis?.(runKey);
+          if (!analysis) {
+            analysis = await deps.analyzer.analyzeCheckpointMessages({
+              node, workDate, messages: pending, context: { ...analysisContext, remoteProgress },
+            });
+            analysis = await deps.runtime.saveRunAnalysis?.(runKey, claim.claimToken, analysis) || analysis;
+          }
+          const progress = await deps.policy.reconcileRemoteProgress({
+            node, workDate, messages: pending, remoteProgress,
           });
           const result = await deps.policy.apply({
             node, workDate, messages: pending, analysis, remoteProgress,

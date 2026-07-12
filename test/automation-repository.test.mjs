@@ -174,3 +174,20 @@ test("a stale run claim cannot finalize inbound messages or advance the cursor",
   assert.equal(repo.getMessageCursor("oc-p2p"), null);
   db.close();
 });
+
+test("persists one fenced batch analysis across failed-run reclaim", () => {
+  const db = openDatabase(":memory:");
+  const clock = { value: "2026-07-13T01:00:00.000Z" };
+  let sequence = 0;
+  const repo = createAutomationRepository(db, { now: () => clock.value, claimToken: () => `claim-${++sequence}` });
+  const input = { runKey: "run-analysis", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" };
+  const first = repo.claimRun(input);
+  const analysis = { items: [{ messageIds: ["om-1"], disposition: "schedule_today" }] };
+  assert.deepEqual(repo.saveRunAnalysis("run-analysis", first.claimToken, analysis), analysis);
+  repo.failRun("run-analysis", first.claimToken, new Error("after task create"));
+  const resumed = repo.claimRun(input);
+  assert.deepEqual(repo.loadRunAnalysis("run-analysis"), analysis);
+  assert.throws(() => repo.saveRunAnalysis("run-analysis", first.claimToken, { items: [] }), /current running claim/);
+  assert.deepEqual(repo.saveRunAnalysis("run-analysis", resumed.claimToken, { items: [] }), analysis);
+  db.close();
+});

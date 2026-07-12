@@ -3,7 +3,7 @@ import test from "node:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createCardActionHandler, createManagerApp, createMessageHandler, renderCardActionResponse, seedFixedReminders, upcomingWeekIdForSunday } from "../src/manager-app.mjs";
+import { createCardActionHandler, createManagerApp, createMessageHandler, reconcileProjectWrites, renderCardActionResponse, seedFixedReminders, upcomingWeekIdForSunday } from "../src/manager-app.mjs";
 import { openDatabase } from "../src/db/database.mjs";
 import { createOperationsRepository } from "../src/db/operations-repository.mjs";
 
@@ -304,4 +304,27 @@ test("authorizes evidence acceptance callbacks by card operator", async () => {
   assert.equal(denied.ignored, true);
   assert.equal(allowed.toast.content, "验收通过");
   assert.equal(decisions, 1);
+});
+
+test("direct project reconciliation records success so repeated checkpoints recover once", async () => {
+  const db = openDatabase(":memory:");
+  const ops = createOperationsRepository(db);
+  db.prepare(`INSERT INTO tasks (id,title,raw_input,next_action,done_definition,status,created_at,updated_at)
+    VALUES ('task-1','任务','任务','执行','交付','done','2026-07-13','2026-07-13')`).run();
+  ops.appendEvent({
+    taskId: null, kind: "project_sync_reconciliation_required",
+    payload: { acceptanceId: "acceptance-1", taskId: "task-1", projectId: "personal-ip", decision: "accepted" },
+    idempotencyKey: "needs-reconcile-1",
+  });
+  let resumes = 0;
+  const input = {
+    tasks: { findById: () => ({ id: "task-1", status: "done" }) }, ops,
+    acceptance: { resumeAcceptedWriteback: async () => { resumes += 1; return { status: "accepted" }; } },
+  };
+  await reconcileProjectWrites(input);
+  await reconcileProjectWrites(input);
+  assert.equal(resumes, 1);
+  assert.equal(ops.listEvents({ kind: "project_sync_reconciled" }).length, 1);
+  assert.ok(ops.findEventByIdempotencyKey("project-sync-reconciled:acceptance-1"));
+  db.close();
 });

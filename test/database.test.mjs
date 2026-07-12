@@ -116,3 +116,11 @@ test("migration four adds automation runtime tables and indexes", () => {
   assert.ok(db.prepare("SELECT 1 FROM schema_migrations WHERE version = 4").get());
   db.close();
 });
+
+test("migration five persists checkpoint batch analysis", () => {
+  const db = openDatabase(":memory:");
+  const runColumns = db.prepare("PRAGMA table_info(automation_runs)").all().map((row) => row.name);
+  assert.ok(runColumns.includes("analysis_json"));
+  assert.ok(db.prepare("SELECT 1 FROM schema_migrations WHERE version = 5").get());
+  db.close();
+});

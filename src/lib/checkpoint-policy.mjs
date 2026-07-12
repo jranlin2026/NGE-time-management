@@ -98,7 +98,7 @@ async function applyDeterministicItems(state, deps) {
       if (!taskId) continue;
       await deps.manager.submitEvidence({
         taskId,
-        evidence: evidenceValues(item.evidence, item.title, state.messages),
+        evidence: evidenceValues(item.evidence, state.messages),
         messageIds: item.evidence?.messageIds || item.messageIds,
         idempotencyKey: `checkpoint-evidence:${stableDigest(item.evidence?.messageIds || item.messageIds || [])}`,
       });
@@ -245,20 +245,39 @@ function stableDigest(...parts) {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 32);
 }
 
-function evidenceValues(evidence, fallback, messages) {
-  if (!evidence || typeof evidence !== "object") return fallback ? [{ type: "text", value: fallback }] : [];
+function evidenceValues(evidence, messages) {
   const byId = new Map((messages || []).map((message) => [message.messageId, message]));
-  const sourceReferences = (evidence.messageIds || []).flatMap((id) => {
+  const referencedIds = evidence?.messageIds || [];
+  const sourceTexts = referencedIds
+    .map((id) => byId.get(id)?.content?.text)
+    .filter((text) => typeof text === "string")
+    .map(normalizeEvidenceText)
+    .filter(Boolean);
+  const sourceText = sourceTexts.join("\n");
+  const sourceReferences = referencedIds.flatMap((id) => {
     const content = byId.get(id)?.content || {};
     if (content.imageKey) return [{ type: "feishu_image", value: content.imageKey }];
     if (content.fileKey) return [{ type: "feishu_file", value: content.fileKey }];
     return [];
   });
   return [
-    ...(evidence.text ? [{ type: "text", value: evidence.text }] : []),
-    ...(evidence.links || []).map((value) => ({ type: "url", value })),
+    ...(sourceText ? [{ type: "text", value: sourceText }] : []),
+    ...extractSourceLinks(sourceText).map((value) => ({ type: "url", value })),
     ...sourceReferences,
   ];
+}
+
+function normalizeEvidenceText(text) {
+  return String(text).trim().replace(/\s+/gu, " ");
+}
+
+function extractSourceLinks(text) {
+  const candidates = String(text).match(/https?:\/\/[^\s<>()\[\]{}"']+/gu) || [];
+  return [...new Set(candidates
+    .map((value) => value.replace(/[.,!?;:，。！？；：]+$/gu, ""))
+    .filter((value) => {
+      try { new URL(value); return true; } catch { return false; }
+    }))];
 }
 
 function sumCheckpointMinutes(checkpoints = []) {

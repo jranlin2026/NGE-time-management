@@ -127,6 +127,31 @@ test("retrying a failed batch reuses the same stable local task id", async () =>
   assert.match(fixture.created[0].id, /^checkpoint-[a-f0-9]{32}$/);
 });
 
+test("evidence uses exact referenced source text and ignores model-authored claims", async () => {
+  let submitted;
+  const policy = createCheckpointPolicy({
+    manager: {
+      submitEvidence: async (input) => { submitted = input; return { status: "needs_user_confirmation" }; },
+      listPendingAcceptance: () => [{ id: "pending-1" }],
+      replanDay: async () => ({ blocks: [] }),
+    },
+    tasks: { listActive: () => [], findDoing: () => null, create: () => assert.fail("must not create task") },
+  });
+  await policy.apply({
+    node: "09:00", workDate: "2026-07-13", remoteProgress: emptyProgress,
+    messages: [{ messageId: "om-proof", content: { text: "  用户只说完成初稿   https://example.com/draft  " } }],
+    analysis: { items: [{
+      messageIds: ["om-proof"], disposition: "evidence_submission", taskId: null, title: "证据",
+      evidence: { messageIds: ["om-proof"], text: "已正式发布并验收", links: ["https://example.com/invented"] },
+    }] },
+  });
+  assert.deepEqual(submitted.evidence, [
+    { type: "text", value: "用户只说完成初稿 https://example.com/draft" },
+    { type: "url", value: "https://example.com/draft" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(submitted.evidence), /正式发布|invented/);
+});
+
 test("12:00 schedules a newly created today task before progress handling", async () => {
   const fixture = policyFixture();
   const result = await fixture.policy.apply({

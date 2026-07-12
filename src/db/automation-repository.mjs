@@ -115,6 +115,21 @@ export function createAutomationRepository(db, deps = {}) {
       });
     },
 
+    loadRunAnalysis(runKey) {
+      const row = db.prepare("SELECT analysis_json FROM automation_runs WHERE run_key=?").get(runKey);
+      return row?.analysis_json ? JSON.parse(row.analysis_json) : null;
+    },
+
+    saveRunAnalysis(runKey, claimToken, analysis) {
+      return withTransaction(db, () => {
+        const result = db.prepare(`UPDATE automation_runs SET analysis_json=COALESCE(analysis_json, ?)
+          WHERE run_key=? AND claim_token=? AND status='running'`)
+          .run(JSON.stringify(analysis), runKey, claimToken);
+        if (result.changes === 0) throw new Error("run analysis requires the current running claim");
+        return JSON.parse(db.prepare("SELECT analysis_json FROM automation_runs WHERE run_key=?").get(runKey).analysis_json);
+      });
+    },
+
     recordInbound(messages) {
       return withTransaction(db, () => {
         const insert = db.prepare(`INSERT OR IGNORE INTO inbound_messages
