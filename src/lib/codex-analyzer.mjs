@@ -249,6 +249,30 @@ const CHECKPOINT_ITEM_FIELDS = [
   "messageIds", "category", "disposition", "title", "projectId", "urgency", "mustBeOwner",
   "estimateMinutes", "dueAt", "nextAction", "doneDefinition", "checkpoints", "rationale",
 ];
+const EXECUTABLE_CHECKPOINT_DISPOSITIONS = new Set(["interrupt_now", "schedule_today"]);
+const VAGUE_CHECKPOINTS = new Set(["完成整个项目", "推进一下", "优化一下", "研究一下"]);
+
+function originalMessageText(message) {
+  if (typeof message?.content?.text === "string") return message.content.text;
+  if (typeof message?.content === "string") return message.content;
+  if (typeof message?.text === "string") return message.text;
+  return "";
+}
+
+function sourceSupportsInterrupt(item, messagesById) {
+  const sourceText = item.messageIds.map((id) => originalMessageText(messagesById.get(id))).join("\n");
+  const unusableJixiangBug = item.category === "system_bug"
+    && item.projectId === "jixiang-os"
+    && item.urgency === "high"
+    && /(?:完全|全部|系统)?(?:无法|不能|不可)(?:正常)?(?:使用|打开|访问|登录|运行)|打不开|瘫痪|宕机|不可用|全挂/u.test(sourceText);
+  const currentBusinessLoss = /(?:正在|当前|现在|已经).{0,30}(?:损失|亏损|赔付|停单|无法收款|客户流失)|(?:损失|亏损|赔付|停单|无法收款|客户流失).{0,30}(?:正在|当前|现在|已经)/u.test(sourceText);
+  const ownerOnlyDeadline = item.mustBeOwner
+    && item.dueAt !== null
+    && /(?:(?:必须|只能|需要).{0,30}(?:我|老板|负责人|owner|本人).{0,30}(?:截止|deadline|到期)|(?:截止|deadline|到期).{0,30}(?:必须|只能|需要).{0,30}(?:我|老板|负责人|owner|本人))/iu.test(sourceText);
+  const multiPersonBlocker = item.category === "blocker"
+    && /(?:阻塞|卡住|影响).{0,40}(?:多人|多个(?:人|部门|团队)|至少[二两2]个?人|[、和与].*(?:人|部门|团队))/u.test(sourceText);
+  return unusableJixiangBug || currentBusinessLoss || ownerOnlyDeadline || multiPersonBlocker;
+}
 
 function validateCheckpointAnalysis(value, messages) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid checkpoint analysis");
@@ -258,6 +282,7 @@ function validateCheckpointAnalysis(value, messages) {
   if (!Array.isArray(value.items)) throw new Error("missing checkpoint items");
   if (typeof value.combinedReplyContext !== "string") throw new Error("missing combinedReplyContext");
   const knownMessageIds = new Set(messages.map((message) => message?.messageId).filter(Boolean));
+  const messagesById = new Map(messages.map((message) => [message?.messageId, message]));
   const classifiedMessageIds = new Set();
   for (const item of value.items) {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("invalid checkpoint item");
@@ -287,14 +312,24 @@ function validateCheckpointAnalysis(value, messages) {
       || item.checkpoints.some((entry) => typeof entry !== "string" || !entry.trim())) {
       throw new Error("invalid checkpoint checkpoints");
     }
+    if (EXECUTABLE_CHECKPOINT_DISPOSITIONS.has(item.disposition)) {
+      const averageMinutes = item.estimateMinutes / item.checkpoints.length;
+      if (averageMinutes < 15 || averageMinutes > 45) throw new Error("invalid executable checkpoint duration");
+      if (item.checkpoints.some((entry) => VAGUE_CHECKPOINTS.has(entry.trim()))) {
+        throw new Error("vague executable checkpoint");
+      }
+    }
+    if (item.disposition === "interrupt_now" && !sourceSupportsInterrupt(item, messagesById)) {
+      item.disposition = "candidate_pool";
+    }
   }
   if (classifiedMessageIds.size !== knownMessageIds.size) throw new Error("missing checkpoint message classification");
 }
 
 function fallbackCheckpointAnalysis(messages, error) {
   return {
-    items: messages.map((message) => ({
-      messageIds: [String(message?.messageId || "unknown")],
+    items: messages.map((message, index) => ({
+      messageIds: [String(message?.messageId || `unknown:${index}`)],
       category: "communication",
       disposition: "candidate_pool",
       title: "待人工复核的消息",

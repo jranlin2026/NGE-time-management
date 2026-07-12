@@ -323,3 +323,133 @@ test("partial or root-extended batch output falls back for every source message"
   assert.deepEqual(result.items.map((item) => item.messageIds), [["om-12"], ["om-13"]]);
   assert.ok(result.items.every((item) => item.disposition === "candidate_pool"));
 });
+
+function checkpointItem(overrides = {}) {
+  return {
+    messageIds: ["om-safe"], category: "task", disposition: "schedule_today",
+    title: "处理消息", projectId: null, urgency: "medium", mustBeOwner: false,
+    estimateMinutes: 30, dueAt: null, nextAction: "写出处理方案", doneDefinition: "方案可执行",
+    checkpoints: ["写出处理方案"], rationale: "需要处理",
+    ...overrides,
+  };
+}
+
+test("keeps interrupt_now only when original source text supports an allowed ground", async (t) => {
+  const cases = [
+    {
+      name: "unusable high-urgency Jixiang OS bug",
+      text: "极享OS现在完全无法使用，页面都打不开",
+      item: { category: "system_bug", projectId: "jixiang-os", urgency: "high" },
+    },
+    {
+      name: "explicit current business loss",
+      text: "线上故障正在导致每小时损失5000元",
+      item: { category: "system_bug", urgency: "high" },
+    },
+    {
+      name: "real owner-only deadline",
+      text: "这件事必须我本人处理，今天18点硬截止",
+      item: { mustBeOwner: true, dueAt: "2026-07-13T10:00:00.000Z", urgency: "high" },
+    },
+    {
+      name: "multi-person blocker",
+      text: "这个阻塞已经影响销售、产品和研发三个人",
+      item: { category: "blocker", urgency: "high" },
+    },
+  ];
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const item = checkpointItem({ disposition: "interrupt_now", ...entry.item });
+      const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+        items: [item], combinedReplyContext: "需要立即处理",
+      }) });
+      const result = await analyzer.analyzeCheckpointMessages({
+        node: "09:00", workDate: "2026-07-13",
+        messages: [{ messageId: "om-safe", content: { text: entry.text } }], context: {},
+      });
+      assert.equal(result.analysisStatus, "complete");
+      assert.equal(result.items[0].disposition, "interrupt_now");
+    });
+  }
+});
+
+test("downgrades interrupt_now when only generated output claims an allowed ground", async () => {
+  const item = checkpointItem({
+    disposition: "interrupt_now", category: "system_bug", projectId: "jixiang-os", urgency: "high",
+    rationale: "系统完全无法使用且正在造成损失",
+  });
+  const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+    items: [item], combinedReplyContext: "需要立即处理",
+  }) });
+  const result = await analyzer.analyzeCheckpointMessages({
+    node: "09:00", workDate: "2026-07-13",
+    messages: [{ messageId: "om-safe", content: { text: "极享OS以后可以优化一下" } }], context: {},
+  });
+
+  assert.equal(result.analysisStatus, "complete");
+  assert.equal(result.items[0].disposition, "candidate_pool");
+});
+
+test("rejects executable checkpoints whose average duration is outside 15 to 45 minutes", async (t) => {
+  for (const estimateMinutes of [10, 100]) {
+    await t.test(`${estimateMinutes} minutes for two checkpoints`, async () => {
+      const item = checkpointItem({
+        estimateMinutes, checkpoints: ["列出三个问题", "写出解决方案"],
+      });
+      const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+        items: [item], combinedReplyContext: "今天处理",
+      }) });
+      const result = await analyzer.analyzeCheckpointMessages({
+        node: "09:00", workDate: "2026-07-13",
+        messages: [{ messageId: "om-safe", content: { text: "今天处理这件事" } }], context: {},
+      });
+      assert.equal(result.analysisStatus, "failed");
+      assert.equal(result.items[0].disposition, "candidate_pool");
+    });
+  }
+});
+
+test("accepts executable checkpoints at the 15 and 45 minute average boundaries", async (t) => {
+  for (const estimateMinutes of [30, 90]) {
+    await t.test(`${estimateMinutes} minutes for two checkpoints`, async () => {
+      const item = checkpointItem({
+        estimateMinutes, checkpoints: ["列出三个问题", "写出解决方案"],
+      });
+      const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+        items: [item], combinedReplyContext: "今天处理",
+      }) });
+      const result = await analyzer.analyzeCheckpointMessages({
+        node: "09:00", workDate: "2026-07-13",
+        messages: [{ messageId: "om-safe", content: { text: "今天处理这件事" } }], context: {},
+      });
+      assert.equal(result.analysisStatus, "complete");
+      assert.equal(result.items[0].disposition, "schedule_today");
+    });
+  }
+});
+
+test("rejects canonical vague executable checkpoint strings", async (t) => {
+  for (const vague of ["完成整个项目", "推进一下", "优化一下", "研究一下"]) {
+    await t.test(vague, async () => {
+      const item = checkpointItem({ checkpoints: [vague] });
+      const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+        items: [item], combinedReplyContext: "今天处理",
+      }) });
+      const result = await analyzer.analyzeCheckpointMessages({
+        node: "09:00", workDate: "2026-07-13",
+        messages: [{ messageId: "om-safe", content: { text: "今天处理这件事" } }], context: {},
+      });
+      assert.equal(result.analysisStatus, "failed");
+      assert.equal(result.items[0].disposition, "candidate_pool");
+    });
+  }
+});
+
+test("assigns stable distinct fallback IDs to malformed source messages", async () => {
+  const analyzer = createCodexAnalyzer({}, { run: async () => "{}" });
+  const result = await analyzer.analyzeCheckpointMessages({
+    node: "09:00", workDate: "2026-07-13", messages: [{}, {}], context: {},
+  });
+
+  assert.deepEqual(result.items.map((item) => item.messageIds), [["unknown:0"], ["unknown:1"]]);
+});
