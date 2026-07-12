@@ -204,7 +204,8 @@ export function createAcceptanceService(deps) {
     if (!storedAcceptance || storedAcceptance.taskId !== task.id || storedAcceptance.deliverableId !== task.deliverableId) {
       throw new Error("reconciliation acceptance identity does not match");
     }
-    if (JSON.stringify(storedAcceptance.evidence) !== JSON.stringify(payload.evidence)) {
+    const durableEvidence = storedAcceptance.evidence || [];
+    if (durableEvidence.length > 0 && JSON.stringify(durableEvidence) !== JSON.stringify(payload.evidence)) {
       throw new Error("reconciliation evidence does not match durable acceptance");
     }
     if (task.status === "done" && storedAcceptance.status === "accepted") {
@@ -222,6 +223,12 @@ export function createAcceptanceService(deps) {
       expectedHash: project.contentHash,
       operationKey: payload.operationKey,
     });
+    if (payload.receiptPath && projectWrite.changeLogPath !== payload.receiptPath) {
+      throw new Error("reconciliation receipt path does not match");
+    }
+    if (payload.contentHash && projectWrite.contentHash !== payload.contentHash) {
+      throw new Error("reconciliation receipt hash does not match");
+    }
     return transaction(() => {
       const currentTask = tasks.findById(task.id);
       const currentAcceptance = acceptances.getAcceptance(storedAcceptance.id);

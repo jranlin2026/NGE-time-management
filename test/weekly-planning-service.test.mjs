@@ -80,6 +80,28 @@ test("generates the next versioned draft in both stores and queues one confirmat
   assert.equal(fixture.projectOps.getLatestWeeklyPlan("2026-W29").version, 2);
 });
 
+test("adopts an orphan draft after file publication and persists its original plan exactly once", async (t) => {
+  const fixture = await setup();
+  t.after(async () => { fixture.db.close(); await fs.rm(fixture.kbDir, { recursive: true, force: true }); });
+  const originalPlan = {
+    outcomes: ["原始孤儿成果"], deliverableChanges: [],
+    tasks: [{ taskId: "orphan", projectId: "personal-ip", projectName: "个人IP", milestoneId: "launch", deliverableId: "first", title: "原始任务", deliverable: "原始交付", completionStandard: "完成", minutes: 30, date: "2026-07-13", requiresEvidence: true, impact: "normal" }],
+  };
+  const orphan = await fixture.weeklyPlans.writeDraft({ weekId: "2026-W29", version: 1, plan: originalPlan });
+  fixture.service = createWeeklyPlanningService({
+    projectRepo: fixture.projects, weeklyPlanRepo: fixture.weeklyPlans, projectOps: fixture.projectOps,
+    ops: fixture.ops, analyzer: { analyzeWeeklyPlan: async () => ({ outcomes: ["重试成果"], deliverableChanges: [], tasks: [] }) },
+    transaction: (fn) => withTransaction(fixture.db, fn),
+  });
+
+  const saved = await fixture.service.generateDraft({ weekId: "2026-W29", version: 1 });
+
+  assert.equal(saved.contentHash, orphan.contentHash);
+  assert.deepEqual(saved.plan, originalPlan);
+  assert.deepEqual(fixture.ops.listOutbox().filter((row) => row.kind === "weekly_plan_card").map((row) => row.payload.plan), [originalPlan]);
+  assert.equal(fixture.projectOps.getLatestWeeklyPlan("2026-W29").version, 1);
+});
+
 test("uses the previous confirmed plan while the current week remains unconfirmed", async (t) => {
   const fixture = await setup();
   t.after(async () => { fixture.db.close(); await fs.rm(fixture.kbDir, { recursive: true, force: true }); });

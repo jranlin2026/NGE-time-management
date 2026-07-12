@@ -194,8 +194,17 @@ export function createWeeklyPlanRepository({
       await publishExclusive(fileSystem, filePath, content);
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
-      const existing = await fs.readFile(filePath, "utf8");
-      if (existing !== content) throw new Error("weekly plan draft version is immutable", { cause: error });
+      let existing;
+      try {
+        existing = parse(await fs.readFile(filePath, "utf8"), filePath);
+      } catch (readError) {
+        throw new Error("weekly plan draft version is immutable", { cause: readError });
+      }
+      if (existing.status !== "draft" || existing.weekId !== weekId || existing.version !== version
+        || existing.filePath !== filePath) {
+        throw new Error("weekly plan draft identity mismatch", { cause: error });
+      }
+      return existing;
     }
     return read(weekId, version);
   }

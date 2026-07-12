@@ -52,6 +52,33 @@ test("writes and reads a draft, then confirms only the unchanged version", async
   assert.equal(repeated.contentHash, confirmed.contentHash);
 });
 
+test("adopts an existing valid immutable draft when retry input and time differ", async () => {
+  const timestamps = ["2026-07-12T22:00:00+08:00", "2026-07-13T07:00:00+08:00"];
+  const repo = createWeeklyPlanRepository({ kbDir: root, now: () => timestamps.shift() });
+  const original = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
+  const different = { ...plan, outcomes: ["重试分析产生的不同成果"] };
+
+  const adopted = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan: different });
+
+  assert.equal(adopted.contentHash, original.contentHash);
+  assert.equal(adopted.createdAt, original.createdAt);
+  assert.deepEqual(adopted.outcomes, plan.outcomes);
+  assert.equal(await fs.readFile(adopted.filePath, "utf8"), original.rawContent);
+});
+
+test("rejects an invalid or mismatched orphan draft without overwriting it", async () => {
+  const repo = createWeeklyPlanRepository({ kbDir: root });
+  const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });
+  const invalid = draft.rawContent.replace("week_id: 2026-W29", "week_id: 2026-W30");
+  await fs.writeFile(draft.filePath, invalid, "utf8");
+
+  await assert.rejects(
+    repo.writeDraft({ weekId: "2026-W29", version: 1, plan: { ...plan, outcomes: ["different"] } }),
+    /draft identity mismatch/,
+  );
+  assert.equal(await fs.readFile(draft.filePath, "utf8"), invalid);
+});
+
 test("rejects confirmation after the weekly plan changed", async () => {
   const repo = createWeeklyPlanRepository({ kbDir: root });
   const draft = await repo.writeDraft({ weekId: "2026-W29", version: 1, plan });

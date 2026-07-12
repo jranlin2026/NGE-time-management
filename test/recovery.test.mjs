@@ -63,6 +63,53 @@ test("reconciles project state before publishing the recovered plan", async () =
   db.close();
 });
 
+test("isolates malformed reconciliation events so startup and valid recovery continue", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "manager-reconcile-isolation-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const db = openDatabase(":memory:");
+  t.after(() => db.close());
+  const config = recoveryAppConfig(root, path.join(root, "unused.sqlite"));
+  const calls = [];
+  const acceptance = { async resumeAcceptedWriteback(event) {
+    calls.push(event.payload.acceptanceId);
+    if (event.payload.acceptanceId === "bad") throw new Error("conflicting receipt");
+    app.state.tasks.update(event.payload.taskId, { status: "done" });
+    return { status: "accepted" };
+  } };
+  const projectRepo = {
+    ensureDraftTemplates: async () => ({ projects: [] }),
+    listProjects: async () => [],
+  };
+  const noConnector = async () => ({ stop: async () => {} });
+  const app = createManagerApp(config, {
+    db, acceptance, projectRepo, connectFeishu: noConnector, setInterval: () => 1, clearInterval() {},
+  });
+  app.state.tasks.create({ id: "bad-task", title: "坏恢复", status: "pending_acceptance" });
+  app.state.tasks.create({ id: "good-task", title: "好恢复", status: "pending_acceptance" });
+  for (const [acceptanceId, taskId] of [["bad", "bad-task"], ["good", "good-task"]]) {
+    app.state.ops.appendEvent({
+      taskId, kind: "project_sync_reconciliation_required",
+      payload: { acceptanceId, taskId, projectId: "personal-ip", decision: "accepted" },
+      idempotencyKey: `project-sync-reconcile:${acceptanceId}`,
+    });
+  }
+
+  await app.start();
+  assert.equal(app.state.tasks.findById("good-task").status, "done");
+  assert.equal(app.state.ops.listEvents({ kind: "project_sync_reconciled" }).length, 1);
+  assert.equal(app.state.ops.listEvents({ kind: "project_sync_reconciliation_failed" }).length, 1);
+  assert.deepEqual([...calls].sort(), ["bad", "good"]);
+  await app.stop();
+
+  const app2 = createManagerApp(config, {
+    db, acceptance, projectRepo, connectFeishu: noConnector, setInterval: () => 1, clearInterval() {},
+  });
+  await app2.start();
+  assert.equal(app2.state.ops.listEvents({ kind: "project_sync_reconciliation_failed" }).length, 1);
+  assert.equal(calls.filter((id) => id === "good").length, 1);
+  await app2.stop();
+});
+
 test("two app starts deterministically finalize a manually accepted image after a Markdown-write crash", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "manager-recovery-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

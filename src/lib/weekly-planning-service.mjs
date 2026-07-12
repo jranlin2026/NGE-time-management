@@ -23,18 +23,23 @@ export function createWeeklyPlanningService({ projectRepo, weeklyPlanRepo, proje
     const previousPlan = latest?.plan || projectOps.getConfirmedWeeklyPlan(weekId)?.plan || null;
     const plan = await analyzer.analyzeWeeklyPlan({ weekId, projects, previousPlan });
     const markdown = await weeklyPlanRepo.writeDraft({ weekId, version, plan });
+    const durablePlan = {
+      outcomes: markdown.outcomes,
+      deliverableChanges: markdown.deliverableChanges,
+      tasks: markdown.tasks,
+    };
     const saved = projectOps.saveWeeklyPlan({
       weekId,
       version,
       markdownPath: markdown.filePath,
       contentHash: markdown.contentHash,
       status: "draft",
-      plan,
+      plan: durablePlan,
       createdAt: markdown.createdAt,
     });
     ops.enqueueOutbox({
       kind: "weekly_plan_card",
-      payload: { plan, weekId, version },
+      payload: { plan: durablePlan, weekId, version },
       idempotencyKey: `weekly-plan-card:${weekId}:${version}`,
     });
     return saved;

@@ -99,6 +99,52 @@ test("reconciles SQLite after Markdown was accepted without applying progress tw
   fixture.db.close();
 });
 
+test("resumes accepted writeback from receipt when rolled-back acceptance evidence is empty", async () => {
+  let failOnce = true;
+  const fixture = await setup({ failureInjector(point) {
+    if (failOnce && point === "after_acceptance_write") {
+      failOnce = false;
+      throw new Error("crash after project write before sqlite commit");
+    }
+  } });
+  pending(fixture);
+  const evidence = [{ type: "url", value: "https://example.com/recovered" }];
+
+  await assert.rejects(
+    fixture.service.submit({ taskId: "critical", evidence, idempotencyKey: "crash-empty-evidence" }),
+    /crash after project write/,
+  );
+  assert.deepEqual(fixture.acceptances.getAcceptance("acceptance-1").evidence, []);
+  const event = fixture.ops.listEvents({ kind: "project_sync_reconciliation_required" })[0];
+
+  const recovered = await fixture.service.resumeAcceptedWriteback(event);
+  const duplicate = await fixture.service.resumeAcceptedWriteback(event);
+
+  assert.equal(recovered.status, "accepted");
+  assert.equal(duplicate.duplicate, true);
+  assert.deepEqual(fixture.acceptances.getAcceptance("acceptance-1").evidence, evidence);
+  assert.equal(fixture.tasks.findById("critical").status, "done");
+  assert.equal(fixture.ops.listEvents({ kind: "task_accepted" }).length, 1);
+  assert.equal(fixture.ops.listOutbox().filter((row) => row.kind === "project_progress_card").length, 1);
+  fixture.db.close();
+});
+
+test("rejects recovery evidence that differs from a nonempty durable acceptance", async () => {
+  const fixture = await setup();
+  pending(fixture);
+  fixture.acceptances.decideAcceptance({
+    acceptanceId: "acceptance-1", status: "pending", decidedAt: null,
+    evidence: [{ type: "url", value: "https://example.com/original" }],
+  });
+  await assert.rejects(() => fixture.service.resumeAcceptedWriteback({ payload: {
+    decision: "accepted", acceptanceId: "acceptance-1", taskId: "critical", projectId: "personal-ip",
+    deliverableId: "video-01", operationKey: "acceptance-acceptance-1",
+    evidence: [{ type: "url", value: "https://example.com/different" }],
+  } }), /evidence does not match durable acceptance/);
+  assert.equal(fixture.tasks.findById("critical").status, "pending_acceptance");
+  fixture.db.close();
+});
+
 test("rejection restores doing and creates one stable rework task for the same deliverable", async () => {
   const fixture = await setup();
   fixture.service = createAcceptanceService({

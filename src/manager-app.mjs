@@ -506,9 +506,21 @@ async function reconcileProjectWrites({ tasks, ops, acceptance }) {
     const acceptanceId = event.payload?.acceptanceId;
     if (!acceptanceId || ops.findEventByIdempotencyKey(`project-sync-reconciled:${acceptanceId}`)) continue;
     if (event.payload?.decision !== "accepted") continue;
-    const result = await acceptance.resumeAcceptedWriteback(event);
-    if (result.status !== "accepted" || tasks.findById(event.payload.taskId)?.status !== "done") continue;
-    reconciled.push({ taskId: event.payload.taskId, projectId: event.payload.projectId, acceptanceId });
+    try {
+      const result = await acceptance.resumeAcceptedWriteback(event);
+      if (result.status !== "accepted" || tasks.findById(event.payload.taskId)?.status !== "done") continue;
+      reconciled.push({ taskId: event.payload.taskId, projectId: event.payload.projectId, acceptanceId });
+    } catch (error) {
+      ops.appendEvent({
+        taskId: event.payload?.taskId || event.taskId || null,
+        kind: "project_sync_reconciliation_failed",
+        payload: {
+          acceptanceId, reconciliationEventId: event.id, attempt: 1,
+          errorCode: error?.code || null, error: String(error?.message || error),
+        },
+        idempotencyKey: `project-sync-reconciliation-failed:${event.id}`,
+      });
+    }
   }
   return reconciled;
 }
