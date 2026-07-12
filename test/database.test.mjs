@@ -96,3 +96,21 @@ test("upgrades a version-two database without losing tasks and applies new defau
   assert.ok(db.prepare("SELECT 1 FROM schema_migrations WHERE version = 3").get());
   db.close();
 });
+
+test("migration four adds automation runtime tables and indexes", () => {
+  const db = openDatabase(":memory:");
+  for (const table of [
+    "automation_runs",
+    "automation_locks",
+    "inbound_messages",
+    "message_cursors",
+    "feishu_task_links",
+  ]) {
+    assert.ok(
+      db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table),
+      `missing table ${table}`,
+    );
+  }
+  assert.ok(db.prepare("SELECT 1 FROM schema_migrations WHERE version = 4").get());
+  db.close();
+});
