@@ -75,9 +75,22 @@ node scripts/run-manager.mjs
 FEISHU_APP_ID=
 FEISHU_APP_SECRET=
 FEISHU_TASKLIST_GUID=
+FEISHU_P2P_CHAT_ID=
+TIME_MASTER_USER_ID=
+FEISHU_RECEIVE_ID=
+FEISHU_RECEIVE_ID_TYPE=open_id
+TIME_MASTER_TIMEZONE=Asia/Shanghai
 ```
 
-`FEISHU_RECEIVE_ID` 可选。未填写时，系统会在首次收到你的飞书消息后自动保存发送者 `open_id`；如果要发到专用群，填写群 `chat_id` 并把 `FEISHU_RECEIVE_ID_TYPE` 改为 `chat_id`。
+`FEISHU_P2P_CHAT_ID` 是要轮询的机器人一对一私聊 `chat_id`；`TIME_MASTER_USER_ID` 是接收固定节点总结的本人 `open_id`。`FEISHU_RECEIVE_ID` 保留给旧的通用发送路径，默认同样填本人 `open_id`；只有发送到群时才把 `FEISHU_RECEIVE_ID_TYPE` 改为 `chat_id`。真实 ID 和密钥只放在本机 `.env`，不要提交。
+
+飞书应用需在开发者后台开通并发布以下权限：
+
+- `im:message` 或 `im:message:readonly`：读取一对一私聊消息。
+- `task:task:read` 和 `task:task:write`：读写主任务与子任务。
+- `task:tasklist:read` 和 `task:tasklist:write`：读写指定任务清单。
+
+权限名称出现在后台不等于已生效；应确认包含权限的应用版本已发布，且机器人、本人和目标任务清单都在应用的可用范围内。
 
 默认知识库：
 
@@ -86,6 +99,26 @@ FEISHU_TASKLIST_GUID=
 ```
 
 默认数据库与导出位于项目的 `data/`，该目录不会进入 Git。
+
+## 固定节点 Codex 自动化
+
+正常运行由一条绑定本项目的本地 Codex 自动化触发，时区为 `Asia/Shanghai`，每天在 00:00、08:00、09:00、12:00、15:00、18:00 和 21:00 执行 `npm run checkpoint`。这是一条自动化的七个调度，不要建立七条重复自动化，也不要同时启动常驻 WebSocket manager。
+
+自动化未运行或 Mac 错过某节点时，下一次执行会按本地检查点记录补跑已到期节点；已完成节点不会重复处理。手工补跑时直接执行：
+
+```bash
+npm run checkpoint
+```
+
+只读诊断不会分析、回复、创建/更新任务或推进检查点：
+
+```bash
+/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node scripts/run-checkpoint.mjs --node=09:00 --dry-run
+```
+
+运行前必须配置 `FEISHU_P2P_CHAT_ID`。成功时输出一行 `status` 为 `dry_run` 的 JSON，其中写操作计数均为 0；失败时保留输出的脱敏 `error`，不要把 `.env` 或 token 贴入日志。
+
+需要暂停或恢复时，在 Codex 的自动化页面对这一条项目自动化切换“禁用/启用”；保留自动化记录与检查点数据，不用删除来代替暂停。恢复后先跑上述 dry-run，再等待或手工执行一次检查点。
 
 ## 安装为 Mac 常驻服务
 
