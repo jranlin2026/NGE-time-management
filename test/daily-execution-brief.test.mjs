@@ -74,6 +74,35 @@ test("lists a multi-block parent once while rendering every checkpoint in global
   assert.match(text, /10:00–10:15[\s\S]*10:15–10:35[\s\S]*18:30–19:00/);
 });
 
+test("renders the earliest incomplete scheduled checkpoint as the explicit first step", () => {
+  const task = approvedTasks()[0];
+  task.checkpoints[0].completed = true;
+  const schedule = {
+    date: DATE,
+    blocks: [
+      block(task.id, 0, "2026-07-13T02:15:00.000Z", "2026-07-13T02:35:00.000Z"),
+      block(task.id, 1, "2026-07-13T02:35:00.000Z", "2026-07-13T03:15:00.000Z"),
+    ],
+  };
+
+  const text = renderDailyExecutionBrief({ date: DATE, schedule, tasks: [task], timezone: TIMEZONE });
+
+  assert.match(text, /【立即开始】\n现在第一步：完成3条口播提纲/);
+  assert.doesNotMatch(text, /现在第一步：确定3个选题与开头钩子/);
+});
+
+test("falls back to the task next action when the earliest block has no valid checkpoint", () => {
+  const task = { ...approvedTasks()[0], nextAction: "打开脚本库并写出第一个钩子" };
+  const schedule = {
+    date: DATE,
+    blocks: [block(task.id, null, "2026-07-13T02:15:00.000Z", "2026-07-13T02:35:00.000Z")],
+  };
+
+  const text = renderDailyExecutionBrief({ date: DATE, schedule, tasks: [task], timezone: TIMEZONE });
+
+  assert.match(text, /【立即开始】\n现在第一步：打开脚本库并写出第一个钩子/);
+});
+
 test("excludes unknown and deferred tasks from the outcome count and labels deferred partial blocks", () => {
   const tasks = approvedTasks().slice(0, 3);
   const schedule = {

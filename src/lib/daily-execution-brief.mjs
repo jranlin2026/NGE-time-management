@@ -21,11 +21,23 @@ export function renderDailyExecutionBrief({
   return [
     `【${headingDate(date)}执行令｜今天只完成${outcomeTasks.length}个结果】`,
     renderVictoryConditions(outcomeTasks),
+    renderImmediateStart(blocks, byId),
     renderTimeline(blocks, byId, deferred, timezone),
     renderBreaks(),
     renderDoNotDo(doNotDo),
     renderFeedback(feedbackNodes),
   ].join("\n\n");
+}
+
+function renderImmediateStart(blocks, byId) {
+  for (const block of blocks) {
+    const task = byId.get(block.taskId);
+    const checkpoint = checkpointFor(task, block.checkpointIndex);
+    if (checkpoint?.completed) continue;
+    const action = clean(checkpoint?.title) || clean(task?.nextAction);
+    if (action) return `【立即开始】\n现在第一步：${action}`;
+  }
+  return "【立即开始】\n现在第一步：等待下一反馈节点确认计划。";
 }
 
 export function renderPlanDelta({
