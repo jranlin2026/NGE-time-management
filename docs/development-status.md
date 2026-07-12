@@ -37,7 +37,7 @@
 - 父任务完成后证据型任务进入 `pending_acceptance`；
 - 一条已启用、绑定项目且含七个节点的 Codex 本地自动化可见。
 
-由 controller 在合并后补全本机配置、核对飞书权限并执行 README 中的 dry-run、隔离任务验收和幂等验收，再创建或启用那一条 Codex 自动化。只有这些验收全部有证据后，才可精确向旧 `scripts/run-manager.mjs` PID 发送 `SIGTERM`；不要关闭无关终端，也不要删除现有用户任务。
+由 controller 在合并后按 [README 的线上验收 runbook](../README.md#待执行的线上验收-runbook) 补全本机配置、核对飞书权限、完成 dry-run、隔离任务与幂等验收，并验证唯一 Codex 自动化的启用/禁用。只有这些验收全部有证据后，才可精确向旧 `scripts/run-manager.mjs` PID 发送 `SIGTERM`；不要关闭无关终端，也不要删除现有用户任务。Codex 自动化启用时不得同时启用 legacy launchd/WebSocket manager。
 
 ## 下一次可见反馈
 
