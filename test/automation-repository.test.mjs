@@ -27,11 +27,12 @@ test("does not process one inbound message twice", () => {
   const message = { messageId: "om-1", chatId: "oc-p2p", senderId: "ou-owner", messageType: "text", content: { text: "新增选题" }, createdAt: "2026-07-13T00:30:00.000Z" };
   repo.recordInbound([message, message]);
   assert.deepEqual(repo.listPendingInbound("oc-p2p").map((item) => item.messageId), ["om-1"]);
-  repo.claimRun({ runKey: "2026-07-13:09:00", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" });
+  const claim = repo.claimRun({ runKey: "2026-07-13:09:00", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" });
   repo.finalizeInbound({
     chatId: "oc-p2p",
     messageIds: ["om-1"],
     runKey: "2026-07-13:09:00",
+    claimToken: claim.claimToken,
     polledThrough: "2026-07-13T01:00:00.000Z",
   });
   assert.deepEqual(repo.listPendingInbound("oc-p2p"), []);
@@ -56,13 +57,15 @@ test("rolls back message processing without advancing the cursor when finalizati
   const repo = createAutomationRepository(db, { now: () => "2026-07-13T01:00:00.000Z" });
   const message = { messageId: "om-1", chatId: "oc-p2p", senderId: "ou-owner", messageType: "text", content: { text: "新增选题" }, createdAt: "2026-07-13T00:30:00.000Z" };
   repo.recordInbound([message]);
+  const claim = repo.claimRun({ runKey: "run-1", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" });
   assert.equal(repo.getMessageCursor("oc-p2p"), null);
   assert.throws(() => repo.finalizeInbound({
     chatId: "oc-p2p",
-    messageIds: ["om-1"],
-    runKey: "missing-run",
+    messageIds: ["om-1", "om-missing"],
+    runKey: "run-1",
+    claimToken: claim.claimToken,
     polledThrough: "2026-07-13T01:00:00.000Z",
-  }), /FOREIGN KEY/);
+  }), /every pending inbound message/);
   assert.deepEqual(repo.listPendingInbound("oc-p2p").map((item) => item.messageId), ["om-1"]);
   assert.equal(repo.getMessageCursor("oc-p2p"), null);
   db.close();
@@ -117,5 +120,34 @@ test("rejects stale workers after an expired run is reclaimed", () => {
   const completed = repo.completeRun("run-1", current.claimToken, { stale: false });
   assert.equal(completed.status, "completed");
   assert.deepEqual(completed.summary, { stale: false });
+  db.close();
+});
+
+test("a stale run claim cannot finalize inbound messages or advance the cursor", () => {
+  const db = openDatabase(":memory:");
+  const clock = { value: "2026-07-13T01:00:00.000Z" };
+  let sequence = 0;
+  const repo = createAutomationRepository(db, {
+    now: () => clock.value,
+    claimToken: () => `claim-${++sequence}`,
+  });
+  repo.recordInbound([{
+    messageId: "om-1", chatId: "oc-p2p", senderId: "ou-owner", messageType: "text",
+    content: { text: "新增选题" }, createdAt: "2026-07-13T00:30:00.000Z",
+  }]);
+  const input = { runKey: "run-1", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" };
+  const stale = repo.claimRun(input);
+  clock.value = "2026-07-13T01:06:00.000Z";
+  repo.claimRun({ ...input, expiresAt: "2026-07-13T01:11:00.000Z" });
+
+  assert.throws(() => repo.finalizeInbound({
+    chatId: "oc-p2p",
+    messageIds: ["om-1"],
+    runKey: "run-1",
+    claimToken: stale.claimToken,
+    polledThrough: "2026-07-13T01:06:00.000Z",
+  }), /current running claim/);
+  assert.deepEqual(repo.listPendingInbound("oc-p2p").map((item) => item.messageId), ["om-1"]);
+  assert.equal(repo.getMessageCursor("oc-p2p"), null);
   db.close();
 });

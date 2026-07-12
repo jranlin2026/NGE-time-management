@@ -142,8 +142,11 @@ export function createAutomationRepository(db, deps = {}) {
       return mapCursor(db.prepare("SELECT * FROM message_cursors WHERE chat_id=?").get(chatId));
     },
 
-    finalizeInbound({ chatId, messageIds, runKey, polledThrough }) {
+    finalizeInbound({ chatId, messageIds, runKey, claimToken, polledThrough }) {
       return withTransaction(db, () => {
+        const ownsRun = db.prepare(`SELECT 1 FROM automation_runs
+          WHERE run_key=? AND claim_token=? AND status='running'`).get(runKey, claimToken);
+        if (!ownsRun) throw new Error("inbound finalization requires the current running claim");
         const uniqueMessageIds = [...new Set(messageIds)];
         if (uniqueMessageIds.length > 0) {
           const placeholders = uniqueMessageIds.map(() => "?").join(",");
