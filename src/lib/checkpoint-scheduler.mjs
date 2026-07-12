@@ -40,6 +40,7 @@ function materializeTaskCheckpoints({ parentBlocks, checkpoints, date, timezone 
   let incomplete = false;
 
   for (const [checkpointIndex, checkpoint] of checkpoints.entries()) {
+    if (checkpoint.completed) continue;
     if (checkpoint.startsAt && checkpoint.endsAt) {
       const start = new Date(checkpoint.startsAt);
       const end = new Date(checkpoint.endsAt);

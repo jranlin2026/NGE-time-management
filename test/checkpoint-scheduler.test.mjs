@@ -72,6 +72,31 @@ test("splits unanchored checkpoints sequentially by minutes", () => {
   ]);
 });
 
+test("skips completed checkpoints without consuming parent capacity", () => {
+  const schedule = dailySchedule([
+    parentBlock("task-progress", "2026-07-13T02:00:00.000Z", "2026-07-13T03:00:00.000Z"),
+  ]);
+  const task = {
+    id: "task-progress",
+    checkpoints: [
+      { title: "已完成关卡", minutes: 30, completed: true },
+      { title: "剩余关卡", minutes: 30, completed: false },
+    ],
+  };
+
+  const result = materializeCheckpointSchedule({
+    schedule,
+    tasks: [task],
+    date: DATE,
+    timezone: TIMEZONE,
+  });
+
+  assert.deepEqual(result.blocks.map((block) => [block.checkpointIndex, block.startsAt, block.endsAt]), [
+    [1, "2026-07-13T02:00:00.000Z", "2026-07-13T02:30:00.000Z"],
+  ]);
+  assert.deepEqual(result.deferred, []);
+});
+
 test("consumes multiple parent blocks without duplicating checkpoints", () => {
   const schedule = dailySchedule([
     parentBlock("task-split", "2026-07-13T02:00:00.000Z", "2026-07-13T02:30:00.000Z"),
