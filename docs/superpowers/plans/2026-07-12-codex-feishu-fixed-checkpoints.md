@@ -55,8 +55,9 @@
 - Produces: `createAutomationRepository(db, deps)`.
 - Produces: `claimLock({ owner, expiresAt })`, `releaseLock(owner)`.
 - Produces: `claimRun({ runKey, workDate, node, expiresAt })`, `completeRun(runKey, summary)`, `failRun(runKey, error)`.
-- Produces: `recordInbound(messages)`, `listPendingInbound(chatId)`, `markInboundProcessed(messageIds, runKey)`.
-- Produces: `getMessageCursor(chatId)`, `advanceMessageCursor(chatId, polledThrough)`.
+- Produces: `recordInbound(messages)`, `listPendingInbound(chatId)`.
+- Produces: `getMessageCursor(chatId)`, `finalizeInbound({ messageIds, runKey, claimToken, chatId, polledThrough })`.
+- `finalizeInbound` is the only public write path for processed messages and message cursors; it must verify the current run claim token and commit both changes atomically.
 - Produces: `upsertFeishuLink(link)`, `findFeishuLink(localTaskId, checkpointIndex)`, `listFeishuLinks(localTaskId)`.
 
 - [ ] **Step 1: Write failing repository tests**
@@ -77,7 +78,8 @@ test("does not process one inbound message twice", () => {
   repo.recordInbound([message, message]);
   assert.deepEqual(repo.listPendingInbound("oc-p2p").map((item) => item.messageId), ["om-1"]);
   repo.claimRun({ runKey: "2026-07-13:09:00", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" });
-  repo.markInboundProcessed(["om-1"], "2026-07-13:09:00");
+  const claim = repo.claimRun({ runKey: "2026-07-13:09:00", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" });
+  repo.finalizeInbound({ messageIds: ["om-1"], runKey: "2026-07-13:09:00", claimToken: claim.run.claimToken, chatId: "oc-p2p", polledThrough: "2026-07-13T01:00:00.000Z" });
   assert.deepEqual(repo.listPendingInbound("oc-p2p"), []);
 });
 
@@ -89,10 +91,11 @@ test("maps parent and checkpoint GUIDs independently", () => {
   assert.equal(repo.findFeishuLink("task-1", 0).parentGuid, "parent-1");
 });
 
-test("advances one chat cursor only after successful finalization", () => {
+test("finalizes messages and cursor under the current run claim", () => {
   const repo = createAutomationRepository(db, { now: () => "2026-07-13T01:00:00.000Z" });
+  const claim = repo.claimRun({ runKey: "2026-07-13:09:00", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" });
   assert.equal(repo.getMessageCursor("oc-p2p"), null);
-  repo.advanceMessageCursor("oc-p2p", "2026-07-13T01:00:00.000Z");
+  repo.finalizeInbound({ messageIds: [], runKey: "2026-07-13:09:00", claimToken: claim.run.claimToken, chatId: "oc-p2p", polledThrough: "2026-07-13T01:00:00.000Z" });
   assert.equal(repo.getMessageCursor("oc-p2p").polledThrough, "2026-07-13T01:00:00.000Z");
 });
 ```
@@ -597,8 +600,7 @@ apply node policy
 push parent tasks and subtasks
 enqueue at most one private summary
 flush outbox
-mark messages processed
-advance the chat cursor to the run's poll end time
+atomically finalize messages and the chat cursor with the current run claim token
 complete run
 release lock
 ```
@@ -724,10 +726,16 @@ await manager.handleAction({
   idempotencyKey: `feishu-parent:${change.taskGuid}:${change.completedAt}`,
 });
 
-automationRepo.advanceMessageCursor(chatId, pollEndTime);
+automationRepo.finalizeInbound({
+  messageIds,
+  runKey,
+  claimToken,
+  chatId,
+  polledThrough: pollEndTime,
+});
 ```
 
-The cursor call belongs in the same successful finalization path as `markInboundProcessed`; it must not execute on analysis, task-sync, reply-queue, or outbox failure.
+`finalizeInbound` must not execute on analysis, task-sync, reply-queue, or outbox failure, and it must reject a stale claim token after lease reclamation.
 
 - [ ] **Step 5: Verify and commit**
 
