@@ -1,12 +1,17 @@
 const RETRY_SECONDS = [30, 120, 300, 900, 1800, 3600, 7200, 7200];
+import { sanitizeError } from "./sanitize-error.mjs";
 
 export function createOutboxWorker({ ops, send, clock }) {
   const nowDate = () => clock?.now?.() || new Date();
 
   return {
-    async flush(limit = 20) {
+    async flush(input = 20) {
+      const { limit, throwOnFailure } = typeof input === "number"
+        ? { limit: input, throwOnFailure: false }
+        : { limit: input?.limit ?? 20, throwOnFailure: Boolean(input?.throwOnFailure) };
       const now = nowDate();
       const rows = ops.dueOutbox(now.toISOString(), limit);
+      let firstError = null;
       for (const row of rows) {
         try {
           const result = await send(row);
@@ -14,18 +19,12 @@ export function createOutboxWorker({ ops, send, clock }) {
         } catch (error) {
           const delay = RETRY_SECONDS[Math.min(row.attempts, RETRY_SECONDS.length - 1)];
           const nextAttemptAt = new Date(now.getTime() + delay * 1000).toISOString();
-          ops.markOutboxRetry(row.id, sanitizeError(error), nextAttemptAt);
+          ops.markOutboxRetry(row.id, new Error(sanitizeError(error)), nextAttemptAt);
+          firstError ||= error;
         }
       }
+      if (throwOnFailure && firstError) throw firstError;
       return rows.length;
     },
   };
-}
-
-function sanitizeError(error) {
-  const message = String(error?.message || error)
-    .replace(/\bBearer\s+[^\s,]+/gi, "Bearer [redacted]")
-    .replace(/(app_secret|token|webhook|authorization)\s*[:=]\s*[^\s,]+/gi, "$1=[redacted]")
-    .slice(0, 500);
-  return new Error(message);
 }

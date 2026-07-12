@@ -20,10 +20,18 @@ Implemented the failure-safe one-shot checkpoint runner, owner-only merged priva
 - Private summaries use plain text and the configured owner `open_id` with a stable digest idempotency key.
 - CLI accepts only `--node`, `--now`, and `--dry-run`, and emits one JSON stdout line.
 
+## Review fixes
+
+- Strict outbox flushing durably schedules a retry and then rejects; runner finalization cannot occur after a delivery failure.
+- Remote progress is reconciled through manager actions before a fresh local task/schedule context is built for message analysis, and policy receives the reconciliation prelude without applying progress twice.
+- CLI dry-run branches before manager runtime/database creation and performs only direct-chat history diagnostics using the configured P2P chat id.
+- Runner, CLI, and outbox share credential sanitization covering bare Bearer credentials and named secret forms.
+- Lock and run leases derive from the execution clock; logical `--now` remains limited to checkpoint selection and polling bounds.
+
 ## Verification
 
-- Focused: 10 passed, 0 failed.
-- Full suite: 309 passed, 0 failed.
+- Focused review suite: 27 passed, 0 failed.
+- Full suite: 314 passed, 0 failed.
 - `git diff --check`: clean.
 
 ## Scope note

@@ -247,6 +247,10 @@ export function createManagerRuntime(config, deps = {}) {
     ops: state.ops,
     outboxWorker: state.outboxWorker,
     clock: deps.clock,
+    buildAnalysisContext: ({ workDate }) => ({
+      activeTasks: state.tasks.listActive(),
+      schedule: { date: workDate, blocks: state.ops.currentSchedule(workDate) },
+    }),
     getCompletedNodes: (workDate) => state.db.prepare("SELECT node FROM automation_runs WHERE work_date=? AND status='completed'").all(workDate).map((row) => row.node),
   });
   return { ...state, automation, taskSync, policy, checkpointRunner, close: () => app.stop() };

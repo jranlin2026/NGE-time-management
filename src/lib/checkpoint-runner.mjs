@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { dueCheckpointNodes, resolveCheckpointContext } from "./checkpoint-schedule.mjs";
+import { sanitizeError } from "./sanitize-error.mjs";
 
 const FIVE_MINUTES = 5 * 60_000;
 
@@ -20,7 +21,8 @@ export function createCheckpointRunner(deps) {
       if (dryRun) return summary;
 
       const owner = deps.owner?.() || randomUUID();
-      const expiresAt = new Date(instant.getTime() + FIVE_MINUTES).toISOString();
+      const executionNow = new Date(deps.clock?.now?.() || new Date());
+      const expiresAt = new Date(executionNow.getTime() + FIVE_MINUTES).toISOString();
       if (!await deps.runtime.claimLock({ owner, expiresAt })) return { status: "skipped", reason: "lock_held" };
 
       let activeRun = null;
@@ -43,11 +45,19 @@ export function createCheckpointRunner(deps) {
           await deps.runtime.recordInbound(inbound);
           const pending = await deps.runtime.listPendingInbound(chatId);
           const remoteProgress = await deps.taskSync.pullProgress({ date: context.workDate });
+          const progress = await deps.policy.reconcileRemoteProgress({
+            node, workDate: context.workDate, messages: pending, remoteProgress,
+          });
+          const analysisContext = await deps.buildAnalysisContext?.({
+            node, workDate: context.workDate, messages: pending, remoteProgress,
+          }) || {};
           const analysis = await deps.analyzer.analyzeCheckpointMessages({
-            node, workDate: context.workDate, messages: pending, context: { remoteProgress },
+            node, workDate: context.workDate, messages: pending, context: { ...analysisContext, remoteProgress },
           });
           const result = await deps.policy.apply({
             node, workDate: context.workDate, messages: pending, analysis, remoteProgress,
+            remoteProgressApplied: true,
+            prelude: progress,
           });
           const schedule = result.schedule || { blocks: [] };
           await deps.taskSync.pushSchedule({ date: context.workDate, schedule });
@@ -66,7 +76,7 @@ export function createCheckpointRunner(deps) {
             });
             summary.repliesQueued += 1;
           }
-          await deps.outboxWorker.flush();
+          await deps.outboxWorker.flush({ throwOnFailure: true });
           await deps.runtime.finalizeInbound({
             chatId,
             messageIds: pending.map((message) => message.messageId),
@@ -144,10 +154,4 @@ function countUpdated(actions = []) {
 
 function emptySummary(workDate, nodes, status) {
   return { status, workDate, nodes, messagesRead: 0, messagesProcessed: 0, tasksCreated: 0, tasksUpdated: 0, repliesQueued: 0, reviewCreated: 0, errors: [] };
-}
-
-function sanitizeError(error) {
-  return String(error?.message || error)
-    .replace(/(app_secret|token|webhook|authorization)\s*[:=]\s*[^\s,]+/gi, "$1=[redacted]")
-    .slice(0, 500);
 }

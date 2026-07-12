@@ -14,21 +14,17 @@ export function createCheckpointPolicy(deps) {
   };
 
   return {
+    async reconcileRemoteProgress(input) {
+      const state = createState(input);
+      await applyRemoteProgress(state, deps);
+      return { actions: state.actions, replyParts: state.replyParts, changed: state.changed };
+    },
     async apply(input) {
       const handler = handlers[input?.node];
       if (!handler) throw new Error(`unsupported checkpoint node: ${input?.node}`);
-      const state = {
-        ...input,
-        messages: input.messages || [],
-        analysis: input.analysis || { items: [] },
-        remoteProgress: input.remoteProgress || {},
-        actions: [],
-        replyParts: [],
-        changed: false,
-        schedule: null,
-      };
+      const state = createState(input);
 
-      await applyRemoteProgress(state, deps);
+      if (!input.remoteProgressApplied) await applyRemoteProgress(state, deps);
       await applyDeterministicItems(state, deps);
       await createActionableTasks(state, deps);
       await replanCreatedTasks(state, deps);
@@ -44,6 +40,19 @@ export function createCheckpointPolicy(deps) {
         schedule: state.schedule,
       };
     },
+  };
+}
+
+function createState(input) {
+  return {
+    ...input,
+    messages: input.messages || [],
+    analysis: input.analysis || { items: [] },
+    remoteProgress: input.remoteProgress || {},
+    actions: [...(input.prelude?.actions || [])],
+    replyParts: [...(input.prelude?.replyParts || [])],
+    changed: Boolean(input.prelude?.changed),
+    schedule: null,
   };
 }
 
