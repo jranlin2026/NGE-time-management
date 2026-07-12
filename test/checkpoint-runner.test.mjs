@@ -82,6 +82,49 @@ test("failed-run retry reuses persisted analysis despite analyzer reorder and re
   assert.deepEqual([...created].sort(), ["om-1", "om-2"]);
 });
 
+test("retry processes only persisted analysis message ids and leaves newly revealed input for next node", async () => {
+  let pollCall = 0;
+  let analyzerCalls = 0;
+  let failPush = true;
+  const analyzed = [];
+  const fixture = runnerFixture({
+    persistAnalysis: true,
+    pollMessages: () => {
+      pollCall += 1;
+      if (pollCall === 1) return [message("om-a", "A")];
+      if (pollCall === 2) return [message("om-a", "A"), message("om-b", "B")];
+      return [];
+    },
+    analyze: async ({ node, messages }) => {
+      analyzerCalls += 1;
+      analyzed.push({ node, ids: messages.map((item) => item.messageId) });
+      return { items: messages.map((item) => ({ messageIds: [item.messageId], disposition: "candidate_pool" })) };
+    },
+    pushSchedule: async () => { if (failPush) { failPush = false; throw new Error("after analysis A"); } },
+  });
+  await assert.rejects(fixture.runner.run({ now: "2026-07-13T09:00:00+08:00", forcedNode: "09:00" }), /after analysis A/);
+  await fixture.runner.run({ now: "2026-07-13T09:00:00+08:00", forcedNode: "09:00" });
+  assert.equal(analyzerCalls, 1);
+  assert.deepEqual(fixture.pending.map((item) => item.messageId), ["om-b"]);
+  await fixture.runner.run({ now: "2026-07-13T12:00:00+08:00", forcedNode: "12:00" });
+  assert.equal(analyzerCalls, 2);
+  assert.deepEqual(analyzed, [{ node: "09:00", ids: ["om-a"] }, { node: "12:00", ids: ["om-b"] }]);
+  assert.deepEqual(fixture.pending, []);
+});
+
+test("legacy analysis snapshot derives its batch from item message ids, never all pending", async () => {
+  const fixture = runnerFixture({
+    persistAnalysis: true,
+    pendingMessages: [message("om-a", "A"), message("om-b", "B")],
+    analyze: async () => assert.fail("legacy snapshot must be reused"),
+  });
+  fixture.runtime.saveRunAnalysis("2026-07-13:09:00", "legacy", {
+    items: [{ messageIds: ["om-a"], disposition: "candidate_pool" }],
+  });
+  await fixture.runner.run({ now: "2026-07-13T09:00:00+08:00", forcedNode: "09:00" });
+  assert.deepEqual(fixture.pending.map((item) => item.messageId), ["om-b"]);
+});
+
 test("refuses to queue a private summary without the owner open_id", async () => {
   const fixture = runnerFixture({ messages: [message("om-1", "新增任务")], managerUserId: "" });
   await assert.rejects(() => fixture.runner.run({ now: "2026-07-13T09:00:00+08:00", forcedNode: "09:00" }), /owner open_id/);
@@ -231,15 +274,19 @@ function runnerFixture({ messages = [], pendingMessages = [], pollMessages, comp
   const pending = [...pendingMessages];
   const finalizedThrough = [];
   let cursor = null;
-  let savedAnalysis = null;
+  const savedAnalyses = new Map();
   const runtime = {
     claimLock: (input) => { calls.push("lock"); onClaimLock?.(input); return !lockHeld; },
     releaseLock: () => { calls.push("unlock"); },
     claimRun: (input) => { calls.push("claim"); claims.push(input); return { claimed: true, claimToken: "claim-1" }; },
     failRun: () => { calls.push("fail"); },
     completeRun: () => { calls.push("complete"); },
-    loadRunAnalysis: persistAnalysis ? () => savedAnalysis : undefined,
-    saveRunAnalysis: persistAnalysis ? (_runKey, _claimToken, analysis) => { calls.push("save-analysis"); savedAnalysis ||= analysis; return savedAnalysis; } : undefined,
+    loadRunAnalysis: persistAnalysis ? (runKey) => savedAnalyses.get(runKey) || null : undefined,
+    saveRunAnalysis: persistAnalysis ? (runKey, _claimToken, analysis) => {
+      calls.push("save-analysis");
+      if (!savedAnalyses.has(runKey)) savedAnalyses.set(runKey, analysis);
+      return savedAnalyses.get(runKey);
+    } : undefined,
     getMessageCursor: () => cursor ? { polledThrough: cursor } : null,
     recordInbound: (items) => { calls.push("record"); pending.push(...items.filter((item) => !pending.some((old) => old.messageId === item.messageId))); },
     listPendingInbound: (_chatId, options = {}) => options.through

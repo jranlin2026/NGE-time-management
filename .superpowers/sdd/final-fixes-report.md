@@ -38,3 +38,12 @@ Implemented all eight final whole-branch review fixes without starting, stopping
 - RED: four focused failures demonstrated model-authored evidence persistence, missing analysis snapshot APIs, repeated analyzer invocation after failure, and repeated direct reconciliation.
 - Focused GREEN: `79` passed, `0` failed.
 - Final full-suite verification: `333` passed, `0` failed, `0` skipped.
+
+## Analysis Batch Crash-Window Fix
+
+- Analysis snapshots now persist the exact sorted source `messageIds` alongside the accepted analysis.
+- Failed-run reclaim filters current pending input to that persisted ID set and uses only this `analysisBatch` for context, policy, summary idempotency, and inbound finalization. Messages revealed after the failed analysis remain pending even when the polling cursor advances, and are analyzed at the next checkpoint.
+- Legacy raw analysis snapshots derive their batch only from the union of `analysis.items[].messageIds`; they never default to all currently pending messages.
+- RED proved that message B, revealed between A's failed run and retry, was incorrectly finalized with A. GREEN proves A alone is retried without another analyzer call, B remains pending, and the next node independently analyzes B. Legacy snapshot coverage also proves B is not absorbed.
+- Focused runner/repository/E2E verification: `31` passed, `0` failed.
+- Final full-suite verification: `335` passed, `0` failed, `0` skipped.

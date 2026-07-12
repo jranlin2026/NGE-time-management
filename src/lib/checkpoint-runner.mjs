@@ -54,21 +54,33 @@ export function createCheckpointRunner(deps) {
           await deps.runtime.recordInbound(inbound);
           const pending = await deps.runtime.listPendingInbound(chatId, { through: pollThrough });
           const remoteProgress = await deps.taskSync.pullProgress({ date: workDate });
-          const analysisContext = await deps.buildAnalysisContext?.({
-            node, workDate, messages: pending, remoteProgress,
+          let storedSnapshot = await deps.runtime.loadRunAnalysis?.(runKey);
+          let snapshot = normalizeAnalysisSnapshot(storedSnapshot);
+          let analysisBatch = snapshot
+            ? filterAnalysisBatch(pending, snapshot.messageIds)
+            : pending;
+          let analysisContext = await deps.buildAnalysisContext?.({
+            node, workDate, messages: analysisBatch, remoteProgress,
           }) || {};
-          let analysis = await deps.runtime.loadRunAnalysis?.(runKey);
-          if (!analysis) {
+          let analysis = snapshot?.analysis;
+          if (!snapshot) {
             analysis = await deps.analyzer.analyzeCheckpointMessages({
-              node, workDate, messages: pending, context: { ...analysisContext, remoteProgress },
+              node, workDate, messages: analysisBatch, context: { ...analysisContext, remoteProgress },
             });
-            analysis = await deps.runtime.saveRunAnalysis?.(runKey, claim.claimToken, analysis) || analysis;
+            const proposedSnapshot = { messageIds: sortedMessageIds(analysisBatch), analysis };
+            storedSnapshot = await deps.runtime.saveRunAnalysis?.(runKey, claim.claimToken, proposedSnapshot) || proposedSnapshot;
+            snapshot = normalizeAnalysisSnapshot(storedSnapshot);
+            analysis = snapshot.analysis;
+            analysisBatch = filterAnalysisBatch(pending, snapshot.messageIds);
+            analysisContext = await deps.buildAnalysisContext?.({
+              node, workDate, messages: analysisBatch, remoteProgress,
+            }) || analysisContext;
           }
           const progress = await deps.policy.reconcileRemoteProgress({
-            node, workDate, messages: pending, remoteProgress,
+            node, workDate, messages: analysisBatch, remoteProgress,
           });
           const result = await deps.policy.apply({
-            node, workDate, messages: pending, analysis, remoteProgress,
+            node, workDate, messages: analysisBatch, analysis, remoteProgress,
             remoteProgressApplied: true,
             prelude: progress,
           });
@@ -85,19 +97,19 @@ export function createCheckpointRunner(deps) {
                 receiveId: deps.config.managerUserId,
                 receiveIdType: "open_id",
               },
-              idempotencyKey: `private-summary:${workDate}:${node}:${scheduleVersion}:${messageDigest(pending)}`,
+              idempotencyKey: `private-summary:${workDate}:${node}:${scheduleVersion}:${messageDigest(analysisBatch)}`,
             });
             summary.repliesQueued += 1;
           }
           await deps.outboxWorker.flush({ throwOnFailure: true });
           await deps.runtime.finalizeInbound({
             chatId,
-            messageIds: pending.map((message) => message.messageId),
+            messageIds: analysisBatch.map((message) => message.messageId),
             runKey,
             claimToken: claim.claimToken,
             polledThrough: pollThrough,
           });
-          summary.messagesProcessed += pending.length;
+          summary.messagesProcessed += analysisBatch.length;
           summary.tasksCreated += countActions(result.actions, "task_created");
           summary.tasksUpdated += countUpdated(result.actions);
           summary.reviewCreated += countActions(result.actions, "daily_review");
@@ -174,6 +186,30 @@ function messageDigest(messages) {
   return createHash("sha256").update(JSON.stringify(messages.map((message) => ({
     id: message.messageId, content: message.content,
   })))).digest("hex");
+}
+
+function normalizeAnalysisSnapshot(stored) {
+  if (!stored) return null;
+  const analysis = stored.analysis && typeof stored.analysis === "object" ? stored.analysis : stored;
+  const messageIds = Array.isArray(stored.messageIds)
+    ? [...new Set(stored.messageIds.filter((id) => typeof id === "string" && id))].sort()
+    : analysisMessageIds(analysis);
+  return { messageIds, analysis };
+}
+
+function analysisMessageIds(analysis) {
+  return [...new Set((analysis?.items || []).flatMap((item) =>
+    Array.isArray(item?.messageIds) ? item.messageIds : [],
+  ).filter((id) => typeof id === "string" && id))].sort();
+}
+
+function sortedMessageIds(messages) {
+  return [...new Set(messages.map((message) => message.messageId).filter(Boolean))].sort();
+}
+
+function filterAnalysisBatch(pending, messageIds) {
+  const accepted = new Set(messageIds);
+  return pending.filter((message) => accepted.has(message.messageId));
 }
 
 function countActions(actions = [], type) {
