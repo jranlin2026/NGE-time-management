@@ -91,7 +91,8 @@ test("start callback replaces the source card with a doing-state card", () => {
       },
     },
   );
-  const row = response.card.body.elements.find((element) => element.tag === "column_set");
+  assert.equal(response.card.type, "raw");
+  const row = response.card.data.body.elements.find((element) => element.tag === "column_set");
   const actions = row.columns.flatMap((column) => column.elements)
     .map((button) => button.behaviors[0].value.action);
 
@@ -156,7 +157,8 @@ test("weekly confirmation awaits persistence and replaces the source card", asyn
 
   const response = await callback({ action: "confirm_weekly_plan", weekId: "2026-W29", version: 2, idempotencyKey: "card:evt-confirm" });
   assert.equal(confirmed, true);
-  assert.match(JSON.stringify(response.card), /周计划已确认/);
+  assert.equal(response.card.type, "raw");
+  assert.match(JSON.stringify(response.card.data), /周计划已确认/);
 });
 
 test("project setup confirmation activates every source draft and replaces the source card", async () => {
@@ -176,7 +178,8 @@ test("project setup confirmation activates every source draft and replaces the s
   const response = await callback({ action: "confirm_project_setup", projects, idempotencyKey: "card:evt-projects" });
 
   assert.deepEqual(calls, [["personal-ip", "hash-1"], ["jixiang-os", "hash-2"]]);
-  assert.match(JSON.stringify(response.card), /项目初始设置已确认/);
+  assert.equal(response.card.type, "raw");
+  assert.match(JSON.stringify(response.card.data), /项目初始设置已确认/);
 });
 
 test("weekly adjustment prompts for a concrete reason without confirming", async () => {

@@ -334,7 +334,7 @@ export function createCardActionHandler({ config = {}, manager, projectRepo, wee
         version: Number(action.version),
         eventId: action.idempotencyKey,
       });
-      return { toast: { type: "success", content: "周计划已确认" }, card: renderConfirmedWeeklyPlanCard(plan) };
+      return { toast: { type: "success", content: "周计划已确认" }, card: { type: "raw", data: renderConfirmedWeeklyPlanCard(plan) } };
     }
     if (action.action === "confirm_project_setup") {
       const confirmed = [];
@@ -343,7 +343,7 @@ export function createCardActionHandler({ config = {}, manager, projectRepo, wee
         if (current?.status === "active") confirmed.push(current);
         else confirmed.push(await projectRepo.confirmDraft(identity.projectId, identity.contentHash));
       }
-      return { toast: { type: "success", content: "项目初始设置已确认" }, card: renderConfirmedProjectSetupCard(confirmed) };
+      return { toast: { type: "success", content: "项目初始设置已确认" }, card: { type: "raw", data: renderConfirmedProjectSetupCard(confirmed) } };
     }
     if (action.action === "adjust_weekly_plan") {
       ops?.setSetting("pending_weekly_adjustment", { weekId: String(action.weekId).trim(), version: Number(action.version) });
@@ -362,11 +362,14 @@ export function renderCardActionResponse(action, result) {
         type: "success",
         content: alreadyStarted ? "任务已经在进行中。" : "已开始，专注完成当前任务。",
       },
-      card: renderCurrentTaskCard({
-        task: { ...result.task, status: "doing" },
-        startsAt: "已开始",
-        endsAt: "完成为止",
-      }),
+      card: {
+        type: "raw",
+        data: renderCurrentTaskCard({
+          task: { ...result.task, status: "doing" },
+          startsAt: "已开始",
+          endsAt: "完成为止",
+        }),
+      },
     };
   }
   return { toast: { type: "success", content: "已收到，计划会自动更新。" } };
