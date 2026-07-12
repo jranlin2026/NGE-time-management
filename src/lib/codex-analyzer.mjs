@@ -100,7 +100,12 @@ export function createCodexAnalyzer(config = {}, deps = {}) {
           prompt: buildCheckpointPrompt({ node, workDate, messages, context }),
         });
         const parsed = JSON.parse(text);
-        validateCheckpointAnalysis(parsed, messages);
+        const downgradedInterrupt = validateCheckpointAnalysis(parsed, messages, workDate);
+        if (downgradedInterrupt) {
+          parsed.combinedReplyContext = parsed.items.some((item) => item.disposition === "interrupt_now")
+            ? "存在经原始消息验证的紧急事项；其他消息已保守进入候选池"
+            : "相关消息未满足打断条件，已保守进入候选池等待复核";
+        }
         return { ...parsed, analysisStatus: "complete" };
       } catch (error) {
         return fallbackCheckpointAnalysis(messages, error);
@@ -249,9 +254,6 @@ const CHECKPOINT_ITEM_FIELDS = [
   "messageIds", "category", "disposition", "title", "projectId", "urgency", "mustBeOwner",
   "estimateMinutes", "dueAt", "nextAction", "doneDefinition", "checkpoints", "rationale",
 ];
-const EXECUTABLE_CHECKPOINT_DISPOSITIONS = new Set(["interrupt_now", "schedule_today"]);
-const VAGUE_CHECKPOINTS = new Set(["完成整个项目", "推进一下", "优化一下", "研究一下"]);
-
 function originalMessageText(message) {
   if (typeof message?.content?.text === "string") return message.content.text;
   if (typeof message?.content === "string") return message.content;
@@ -259,22 +261,59 @@ function originalMessageText(message) {
   return "";
 }
 
-function sourceSupportsInterrupt(item, messagesById) {
+function hasNegatedP0Language(text) {
+  return /(?:没有|并未|未曾|不是|并非|不再).{0,12}(?:损失|亏损|赔付|停单|流失|无法|不能|不可|打不开|瘫痪|宕机|阻塞|影响)/u.test(text);
+}
+
+function parseSourceDeadline(text, workDate) {
+  const explicit = /(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?\s*(\d{1,2})(?:[:点时](\d{1,2})?)?/u.exec(text);
+  const relative = /今天\s*(\d{1,2})(?:[:点时](\d{1,2})?)?/u.exec(text);
+  let date = workDate;
+  let hour;
+  let minute;
+  if (explicit) {
+    date = `${explicit[1]}-${explicit[2].padStart(2, "0")}-${explicit[3].padStart(2, "0")}`;
+    hour = Number(explicit[4]);
+    minute = Number(explicit[5] || 0);
+  } else if (relative && /^\d{4}-\d{2}-\d{2}$/.test(workDate)) {
+    hour = Number(relative[1]);
+    minute = Number(relative[2] || 0);
+  } else {
+    return null;
+  }
+  if (!isValidDate(date) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return new Date(`${date}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00+08:00`).toISOString();
+}
+
+function isConcreteCheckpointTitle(title) {
+  const text = title.trim();
+  if (text.length < 4) return false;
+  if (/(?:一下|整个项目|项目进度|这个事情|这件事|相关工作|后续工作|进一步|持续推进|尽快处理)/u.test(text)) return false;
+  return /(?:写出|列出|确定|完成|提交|发布|录制|拍摄|修复|验证|确认|整理|记录|创建|生成|发送|更新|删除|安装|配置|测试|复核|对比|标注|导出|绘制|实现|起草|交付)/u.test(text);
+}
+
+function sourceSupportsInterrupt(item, messagesById, workDate) {
   const sourceText = item.messageIds.map((id) => originalMessageText(messagesById.get(id))).join("\n");
+  if (hasNegatedP0Language(sourceText)) return false;
   const unusableJixiangBug = item.category === "system_bug"
     && item.projectId === "jixiang-os"
     && item.urgency === "high"
     && /(?:完全|全部|系统)?(?:无法|不能|不可)(?:正常)?(?:使用|打开|访问|登录|运行)|打不开|瘫痪|宕机|不可用|全挂/u.test(sourceText);
-  const currentBusinessLoss = /(?:正在|当前|现在|已经).{0,30}(?:损失|亏损|赔付|停单|无法收款|客户流失)|(?:损失|亏损|赔付|停单|无法收款|客户流失).{0,30}(?:正在|当前|现在|已经)/u.test(sourceText);
+  const currentBusinessLoss = !/(?:避免|防止|预防|可能|如果|未来|风险)/u.test(sourceText)
+    && /(?:正在|当前|现在|已经).{0,30}(?:导致|造成|产生|发生|面临|损失|亏损|赔付|停单|无法收款|客户流失)|(?:损失|亏损|赔付|停单|无法收款|客户流失).{0,30}(?:正在|当前|现在|已经)/u.test(sourceText);
+  const parsedSourceDeadline = parseSourceDeadline(sourceText, workDate);
+  const modelDeadline = item.dueAt === null ? null : new Date(item.dueAt).toISOString();
   const ownerOnlyDeadline = item.mustBeOwner
-    && item.dueAt !== null
-    && /(?:(?:必须|只能|需要).{0,30}(?:我|老板|负责人|owner|本人).{0,30}(?:截止|deadline|到期)|(?:截止|deadline|到期).{0,30}(?:必须|只能|需要).{0,30}(?:我|老板|负责人|owner|本人))/iu.test(sourceText);
+    && parsedSourceDeadline !== null
+    && modelDeadline === parsedSourceDeadline
+    && /(?:必须.{0,10}(?:我|老板|负责人|本人).{0,10}(?:本人|亲自|处理)|只能.{0,10}(?:我|老板|负责人|本人))/u.test(sourceText)
+    && /(?:截止|deadline|到期)/iu.test(sourceText);
   const multiPersonBlocker = item.category === "blocker"
     && /(?:阻塞|卡住|影响).{0,40}(?:多人|多个(?:人|部门|团队)|至少[二两2]个?人|[、和与].*(?:人|部门|团队))/u.test(sourceText);
   return unusableJixiangBug || currentBusinessLoss || ownerOnlyDeadline || multiPersonBlocker;
 }
 
-function validateCheckpointAnalysis(value, messages) {
+function validateCheckpointAnalysis(value, messages, workDate) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid checkpoint analysis");
   if (Object.keys(value).some((field) => !["items", "combinedReplyContext"].includes(field))) {
     throw new Error("unsupported checkpoint analysis field");
@@ -284,6 +323,7 @@ function validateCheckpointAnalysis(value, messages) {
   const knownMessageIds = new Set(messages.map((message) => message?.messageId).filter(Boolean));
   const messagesById = new Map(messages.map((message) => [message?.messageId, message]));
   const classifiedMessageIds = new Set();
+  let downgradedInterrupt = false;
   for (const item of value.items) {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("invalid checkpoint item");
     if (Object.keys(item).some((field) => !CHECKPOINT_ITEM_FIELDS.includes(field))) throw new Error("unsupported checkpoint item field");
@@ -309,21 +349,19 @@ function validateCheckpointAnalysis(value, messages) {
     if (!Number.isInteger(item.estimateMinutes) || item.estimateMinutes < 1) throw new Error("invalid checkpoint estimateMinutes");
     if (item.dueAt !== null && (typeof item.dueAt !== "string" || Number.isNaN(Date.parse(item.dueAt)))) throw new Error("invalid checkpoint dueAt");
     if (!Array.isArray(item.checkpoints) || item.checkpoints.length < 1 || item.checkpoints.length > 8
-      || item.checkpoints.some((entry) => typeof entry !== "string" || !entry.trim())) {
+      || item.checkpoints.some((entry) => !entry || typeof entry !== "object" || Array.isArray(entry)
+        || Object.keys(entry).some((field) => !["title", "minutes"].includes(field))
+        || typeof entry.title !== "string" || !isConcreteCheckpointTitle(entry.title)
+        || !Number.isInteger(entry.minutes) || entry.minutes < 15 || entry.minutes > 45)) {
       throw new Error("invalid checkpoint checkpoints");
     }
-    if (EXECUTABLE_CHECKPOINT_DISPOSITIONS.has(item.disposition)) {
-      const averageMinutes = item.estimateMinutes / item.checkpoints.length;
-      if (averageMinutes < 15 || averageMinutes > 45) throw new Error("invalid executable checkpoint duration");
-      if (item.checkpoints.some((entry) => VAGUE_CHECKPOINTS.has(entry.trim()))) {
-        throw new Error("vague executable checkpoint");
-      }
-    }
-    if (item.disposition === "interrupt_now" && !sourceSupportsInterrupt(item, messagesById)) {
+    if (item.disposition === "interrupt_now" && !sourceSupportsInterrupt(item, messagesById, workDate)) {
       item.disposition = "candidate_pool";
+      downgradedInterrupt = true;
     }
   }
   if (classifiedMessageIds.size !== knownMessageIds.size) throw new Error("missing checkpoint message classification");
+  return downgradedInterrupt;
 }
 
 function fallbackCheckpointAnalysis(messages, error) {
@@ -340,7 +378,7 @@ function fallbackCheckpointAnalysis(messages, error) {
       dueAt: null,
       nextAction: "人工阅读原始消息并判断下一步",
       doneDefinition: "完成分类并记录明确处理决定",
-      checkpoints: ["人工复核原始消息"],
+      checkpoints: [{ title: "人工复核原始消息", minutes: 15 }],
       rationale: "自动分析无效或不受支持，保守进入候选池，不打断也不排期",
     })),
     combinedReplyContext: "消息分析失败，已保守放入候选池等待人工复核",

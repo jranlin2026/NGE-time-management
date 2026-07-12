@@ -250,7 +250,11 @@ test("analyzes one interval as one batch", async () => {
         title: "老板为什么要学Codex", projectId: "personal-ip", urgency: "low",
         mustBeOwner: true, estimateMinutes: 40, dueAt: null,
         nextAction: "写出一个真实成本案例", doneDefinition: "形成60秒脚本第一版",
-        checkpoints: ["确定真实案例", "写出开头钩子", "完成脚本第一版"],
+        checkpoints: [
+          { title: "确定真实案例", minutes: 15 },
+          { title: "写出开头钩子", minutes: 15 },
+          { title: "完成脚本第一版", minutes: 30 },
+        ],
         rationale: "符合个人IP获客方向，但不应打断当前拍摄",
       }],
       combinedReplyContext: "一条有效选题进入候选池",
@@ -291,7 +295,7 @@ test("unsupported analyzer values never interrupt or schedule", async () => {
       messageIds: ["om-11"], category: "idea", disposition: "teleport_now",
       title: "新想法", projectId: null, urgency: "high", mustBeOwner: false,
       estimateMinutes: 20, dueAt: null, nextAction: "看看", doneDefinition: "看完",
-      checkpoints: ["看看"], rationale: "未知策略",
+      checkpoints: [{ title: "写出问题清单", minutes: 20 }], rationale: "未知策略",
     }],
     combinedReplyContext: "立即处理",
   }) });
@@ -309,7 +313,7 @@ test("partial or root-extended batch output falls back for every source message"
       messageIds: ["om-12"], category: "idea", disposition: "candidate_pool",
       title: "一个想法", projectId: null, urgency: "low", mustBeOwner: false,
       estimateMinutes: 20, dueAt: null, nextAction: "记录想法", doneDefinition: "想法已记录",
-      checkpoints: ["记录想法"], rationale: "没有截止时间",
+      checkpoints: [{ title: "记录想法要点", minutes: 20 }], rationale: "没有截止时间",
     }],
     combinedReplyContext: "已处理",
     unsupportedAction: "schedule",
@@ -329,7 +333,7 @@ function checkpointItem(overrides = {}) {
     messageIds: ["om-safe"], category: "task", disposition: "schedule_today",
     title: "处理消息", projectId: null, urgency: "medium", mustBeOwner: false,
     estimateMinutes: 30, dueAt: null, nextAction: "写出处理方案", doneDefinition: "方案可执行",
-    checkpoints: ["写出处理方案"], rationale: "需要处理",
+    checkpoints: [{ title: "写出处理方案", minutes: 30 }], rationale: "需要处理",
     ...overrides,
   };
 }
@@ -390,11 +394,14 @@ test("downgrades interrupt_now when only generated output claims an allowed grou
   assert.equal(result.items[0].disposition, "candidate_pool");
 });
 
-test("rejects executable checkpoints whose average duration is outside 15 to 45 minutes", async (t) => {
+test("rejects checkpoint objects whose minutes are outside 15 to 45", async (t) => {
   for (const estimateMinutes of [10, 100]) {
     await t.test(`${estimateMinutes} minutes for two checkpoints`, async () => {
       const item = checkpointItem({
-        estimateMinutes, checkpoints: ["列出三个问题", "写出解决方案"],
+        estimateMinutes, checkpoints: [
+          { title: "列出三个问题", minutes: estimateMinutes / 2 },
+          { title: "写出解决方案", minutes: estimateMinutes / 2 },
+        ],
       });
       const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
         items: [item], combinedReplyContext: "今天处理",
@@ -409,11 +416,14 @@ test("rejects executable checkpoints whose average duration is outside 15 to 45 
   }
 });
 
-test("accepts executable checkpoints at the 15 and 45 minute average boundaries", async (t) => {
+test("accepts checkpoint objects at the 15 and 45 minute boundaries", async (t) => {
   for (const estimateMinutes of [30, 90]) {
     await t.test(`${estimateMinutes} minutes for two checkpoints`, async () => {
       const item = checkpointItem({
-        estimateMinutes, checkpoints: ["列出三个问题", "写出解决方案"],
+        estimateMinutes, checkpoints: [
+          { title: "列出三个问题", minutes: estimateMinutes / 2 },
+          { title: "写出解决方案", minutes: estimateMinutes / 2 },
+        ],
       });
       const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
         items: [item], combinedReplyContext: "今天处理",
@@ -428,10 +438,10 @@ test("accepts executable checkpoints at the 15 and 45 minute average boundaries"
   }
 });
 
-test("rejects canonical vague executable checkpoint strings", async (t) => {
-  for (const vague of ["完成整个项目", "推进一下", "优化一下", "研究一下"]) {
+test("rejects vague checkpoint titles through a general concreteness rule", async (t) => {
+  for (const vague of ["完成整个项目", "推进一下", "优化一下", "研究一下", "处理一下这个事情", "推进项目进度"]) {
     await t.test(vague, async () => {
-      const item = checkpointItem({ checkpoints: [vague] });
+      const item = checkpointItem({ checkpoints: [{ title: vague, minutes: 30 }] });
       const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
         items: [item], combinedReplyContext: "今天处理",
       }) });
@@ -452,4 +462,56 @@ test("assigns stable distinct fallback IDs to malformed source messages", async 
   });
 
   assert.deepEqual(result.items.map((item) => item.messageIds), [["unknown:0"], ["unknown:1"]]);
+});
+
+test("rejects string-only checkpoints after the object checkpoint migration", async () => {
+  const item = checkpointItem({ checkpoints: ["写出处理方案"] });
+  const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+    items: [item], combinedReplyContext: "今天处理",
+  }) });
+  const result = await analyzer.analyzeCheckpointMessages({
+    node: "09:00", workDate: "2026-07-13",
+    messages: [{ messageId: "om-safe", content: { text: "今天处理这件事" } }], context: {},
+  });
+  assert.equal(result.analysisStatus, "failed");
+  assert.equal(result.items[0].disposition, "candidate_pool");
+});
+
+test("downgrades negated or ambiguous interrupt claims and neutralizes reply context", async (t) => {
+  const cases = [
+    {
+      name: "negated current loss",
+      text: "现在没有损失，只是想提前优化",
+      item: { category: "system_bug", urgency: "high" },
+    },
+    {
+      name: "negated unusable login",
+      text: "极享OS不是不能登录，只是页面有点慢",
+      item: { category: "system_bug", projectId: "jixiang-os", urgency: "high" },
+    },
+    {
+      name: "ambiguous owner deadline",
+      text: "这件事必须我本人处理，今天尽快截止",
+      item: { mustBeOwner: true, dueAt: "2026-07-13T10:00:00.000Z", urgency: "high" },
+    },
+    {
+      name: "model dueAt does not match source deadline",
+      text: "这件事必须我本人处理，今天18点硬截止",
+      item: { mustBeOwner: true, dueAt: "2026-07-13T11:00:00.000Z", urgency: "high" },
+    },
+  ];
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+        items: [checkpointItem({ disposition: "interrupt_now", ...entry.item })],
+        combinedReplyContext: "必须立即中断当前工作并马上处理",
+      }) });
+      const result = await analyzer.analyzeCheckpointMessages({
+        node: "09:00", workDate: "2026-07-13",
+        messages: [{ messageId: "om-safe", content: { text: entry.text } }], context: {},
+      });
+      assert.equal(result.items[0].disposition, "candidate_pool");
+      assert.doesNotMatch(result.combinedReplyContext, /立即|马上|中断/);
+    });
+  }
 });
