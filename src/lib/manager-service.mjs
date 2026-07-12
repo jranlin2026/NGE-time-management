@@ -223,7 +223,9 @@ export function createManagerService(deps) {
         idempotencyKey: `defer-resume:${task.id}:${input.idempotencyKey || nowDate().toISOString()}`,
       });
     }
-    if (input.action === "complete") enqueueFeishuTaskCompletion(updated);
+    if (input.action === "complete" && input.deliveryMode !== "task_dm") {
+      enqueueFeishuTaskCompletion(updated);
+    }
     await replanDay({ reason: `task_${input.action}`, deliveryMode: input.deliveryMode });
     return { action: input.action, task: tasks.findById(task.id), minimumAction: minimum };
   }
@@ -260,7 +262,7 @@ export function createManagerService(deps) {
       if (["inbox", "open", "ready", "deferred"].includes(selectedTask.status)) {
         tasks.update(taskId, { status: "scheduled" });
       }
-      if (!ops.getSetting(`feishu_task_guid:${taskId}`)) {
+      if (options.deliveryMode !== "task_dm" && !ops.getSetting(`feishu_task_guid:${taskId}`)) {
         ops.enqueueOutbox({
           kind: "feishu_task_create",
           payload: {

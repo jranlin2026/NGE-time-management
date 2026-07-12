@@ -105,6 +105,10 @@ test("task_dm replanning keeps schedule side effects but does not enqueue a task
   assert.ok(result.blocks.length > 0);
   assert.ok(scheduled.length > 0);
   assert.equal(ops.listOutbox().some((row) => ["daily_plan_card", "replan_card"].includes(row.kind)), false);
+  assert.equal(
+    ops.listOutbox().some((row) => ["feishu_task_create", "feishu_task_update"].includes(row.kind)),
+    false,
+  );
   assert.equal(ops.listEvents().some((event) => event.kind === "schedule_replanned"), true);
   db.close();
 });
@@ -156,6 +160,26 @@ test("silent task_dm action queues no standalone owner message", async () => {
 
   assert.equal(ops.listOutbox().some((row) => row.kind === "replan_card"), false);
   assert.equal(ops.listOutbox().some((row) => row.kind === "status_message"), false);
+  db.close();
+});
+
+test("task_dm completion does not enqueue a legacy task update", async () => {
+  const { db, tasks, ops, manager } = setup();
+  tasks.create({ id: "remote-done", rawInput: "远端完成", status: "doing" });
+  ops.setSetting("feishu_task_guid:remote-done", "remote-guid");
+
+  await manager.handleAction({
+    action: "complete",
+    taskId: "remote-done",
+    idempotencyKey: "managed-complete:1",
+    deliveryMode: "task_dm",
+    suppressOutbox: true,
+  });
+
+  assert.equal(
+    ops.listOutbox().some((row) => ["feishu_task_create", "feishu_task_update"].includes(row.kind)),
+    false,
+  );
   db.close();
 });
 

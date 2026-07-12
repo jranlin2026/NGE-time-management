@@ -123,6 +123,9 @@ function e2eFixture() {
       return seconds > (startTime ?? -Infinity) && seconds <= endTime;
     }),
     sendOutbox: async (row) => {
+      if (["feishu_task_create", "feishu_task_update"].includes(row.kind)) {
+        assert.fail(`legacy task outbox reached checkpoint flow: ${row.kind}`);
+      }
       if (row.kind === "private_checkpoint_summary") privateReplies.push(row.payload);
       return { messageId: `reply-${privateReplies.length}` };
     },
