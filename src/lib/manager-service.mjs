@@ -218,13 +218,17 @@ export function createManagerService(deps) {
       });
     }
     if (input.action === "complete") enqueueFeishuTaskCompletion(updated);
-    await replanDay({ reason: `task_${input.action}` });
+    await replanDay({ reason: `task_${input.action}`, deliveryMode: input.deliveryMode });
     return { action: input.action, task: tasks.findById(task.id), minimumAction: minimum };
   }
 
-  async function replanDay({ reason = "manual", date = null, now = null } = {}) {
+  async function replanDay(options = {}) {
+    const { reason = "manual", date = null, now = null } = options;
     const currentNow = now ? new Date(now) : nowDate();
     const scheduleDate = date || localDate(currentNow, settings.timezone);
+    const scheduleSettings = options.maxCriticalTasks == null
+      ? settings
+      : { ...settings, maxCriticalTasks: options.maxCriticalTasks };
     const activeTasks = tasks.listActive().filter((task) => task.status !== "deferred");
     const existingBlocks = ops.currentSchedule(scheduleDate);
     const hasCurrentBlock = existingBlocks.some((block) => block.status === "doing");
@@ -233,13 +237,13 @@ export function createManagerService(deps) {
         schedule: { date: scheduleDate, blocks: existingBlocks },
         now: currentNow.toISOString(),
         tasks: activeTasks,
-        settings,
+        settings: scheduleSettings,
       })
       : buildDailySchedule({
         date: scheduleDate,
         now: currentNow.toISOString(),
         tasks: activeTasks,
-        settings,
+        settings: scheduleSettings,
       });
 
     for (const task of activeTasks) ops.cancelPendingReminders(task.id);
@@ -282,15 +286,17 @@ export function createManagerService(deps) {
       };
     });
     const isDailyPlan = reason === "daily_plan";
-    ops.enqueueOutbox({
-      kind: isDailyPlan ? "daily_plan_card" : "replan_card",
-      payload: {
-        card: renderDailyPlanCard({ date: scheduleDate, blocks: enriched, capacityWarnings: result.capacityWarnings }),
-        changed: reason,
-        reason,
-      },
-      idempotencyKey: `${isDailyPlan ? "daily-plan" : "replan"}:${scheduleDate}:${stored.version}`,
-    });
+    if (options.deliveryMode !== "task_dm") {
+      ops.enqueueOutbox({
+        kind: isDailyPlan ? "daily_plan_card" : "replan_card",
+        payload: {
+          card: renderDailyPlanCard({ date: scheduleDate, blocks: enriched, capacityWarnings: result.capacityWarnings }),
+          changed: reason,
+          reason,
+        },
+        idempotencyKey: `${isDailyPlan ? "daily-plan" : "replan"}:${scheduleDate}:${stored.version}`,
+      });
+    }
     ops.appendEvent({
       kind: isDailyPlan ? "daily_plan_created" : "schedule_replanned",
       payload: { date: scheduleDate, version: stored.version, reason, taskIds: [...selectedIds] },

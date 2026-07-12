@@ -116,6 +116,21 @@ test("persists and completes task checkpoints", () => {
   db.close();
 });
 
+test("preserves checkpoint minutes from checkpoint analysis", () => {
+  const { db, tasks } = setup();
+  const created = tasks.create({
+    id: "timed-checkpoints",
+    rawInput: "完成脚本",
+    checkpoints: [{ title: "列提纲", minutes: 15 }, { title: "写初稿", minutes: 30 }],
+  });
+
+  assert.deepEqual(created.checkpoints, [
+    { title: "列提纲", minutes: 15, completed: false },
+    { title: "写初稿", minutes: 30, completed: false },
+  ]);
+  db.close();
+});
+
 test("replaces schedules by version without deleting history", () => {
   const { db, tasks, ops } = setup();
   tasks.create({ id: "task-1", rawInput: "拍视频" });

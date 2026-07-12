@@ -195,7 +195,11 @@ function normalizeCheckpoints(checkpoints) {
   return (Array.isArray(checkpoints) ? checkpoints : [])
     .map((checkpoint) => typeof checkpoint === "string"
       ? { title: clean(checkpoint), completed: false }
-      : { title: clean(checkpoint?.title), completed: Boolean(checkpoint?.completed) })
+      : {
+          title: clean(checkpoint?.title),
+          ...(Number.isInteger(checkpoint?.minutes) ? { minutes: checkpoint.minutes } : {}),
+          completed: Boolean(checkpoint?.completed),
+        })
     .filter((checkpoint) => checkpoint.title)
     .slice(0, 8);
 }

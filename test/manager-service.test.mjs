@@ -95,6 +95,30 @@ test("requires evidence before completing a project deliverable", async () => {
   db.close();
 });
 
+test("task_dm replanning keeps schedule side effects but does not enqueue a task card", async () => {
+  const { db, tasks, ops, manager, scheduled } = setup();
+  tasks.create({ id: "quiet-plan", rawInput: "安静排程", status: "ready" });
+
+  const result = await manager.replanDay({ date: "2026-07-10", now: NOW, reason: "checkpoint_09:00", deliveryMode: "task_dm" });
+
+  assert.ok(result.blocks.length > 0);
+  assert.ok(scheduled.length > 0);
+  assert.equal(ops.listOutbox().some((row) => ["daily_plan_card", "replan_card"].includes(row.kind)), false);
+  assert.equal(ops.listEvents().some((event) => event.kind === "schedule_replanned"), true);
+  db.close();
+});
+
+test("task_dm action replanning does not leak a replan card", async () => {
+  const { db, tasks, ops, manager } = setup();
+  tasks.create({ id: "remote-done", rawInput: "远端完成", status: "doing" });
+
+  await manager.handleAction({ action: "complete", taskId: "remote-done", idempotencyKey: "feishu-parent:1", deliveryMode: "task_dm" });
+
+  assert.equal(ops.listOutbox().some((row) => row.kind === "replan_card"), false);
+  assert.equal(ops.listOutbox().some((row) => row.kind === "status_message"), true);
+  db.close();
+});
+
 test("completes one checkpoint without completing the parent task", async () => {
   const { db, tasks, ops, manager } = setup();
   const task = tasks.create({
