@@ -212,7 +212,13 @@ const WEEKLY_TASK_FIELDS = [
   "deliverable", "completionStandard", "minutes", "date", "requiresEvidence", "impact",
 ];
 
-function validateWeeklyPlan(value, projects) {
+function isValidDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+export function validateWeeklyPlan(value, projects) {
   if (!value || typeof value !== "object") throw new Error("weekly plan must be an object");
   if (!Array.isArray(value.outcomes) || !value.outcomes.every((item) => String(item).trim())) {
     throw new Error("invalid weekly outcomes");
@@ -220,6 +226,7 @@ function validateWeeklyPlan(value, projects) {
   if (!Array.isArray(value.deliverableChanges) || !Array.isArray(value.tasks)) {
     throw new Error("weekly plan arrays are missing");
   }
+  const changeIds = new Set();
   for (const change of value.deliverableChanges) {
     const project = projects.find((item) => item.id === change.projectId);
     if (!project) throw new Error(`unknown deliverable change project: ${change.projectId}`);
@@ -227,6 +234,11 @@ function validateWeeklyPlan(value, projects) {
     if (!milestone) throw new Error(`unknown deliverable change milestone: ${change.milestoneId}`);
     const current = milestone.deliverables?.find((item) => item.id === change.deliverableId);
     const existing = Boolean(current);
+    const changeId = `${change.projectId}\0${change.milestoneId}\0${change.deliverableId}`;
+    if (!String(change.deliverableId).trim() || changeIds.has(changeId)) {
+      throw new Error(`invalid deliverable change id: ${change.deliverableId}`);
+    }
+    changeIds.add(changeId);
     if (current?.status === "accepted") {
       throw new Error(`weekly plan cannot change accepted deliverable: ${change.deliverableId}`);
     }
@@ -264,6 +276,9 @@ function validateWeeklyPlan(value, projects) {
       throw new Error(`invalid weekly task text: ${task.taskId}`);
     }
     if (!Number.isInteger(task.minutes) || task.minutes < 5 || task.minutes > 480) throw new Error("invalid weekly task minutes");
+    if (!isValidDate(task.date)) {
+      throw new Error("invalid weekly task date");
+    }
     if (typeof task.requiresEvidence !== "boolean" || !task.requiresEvidence) throw new Error("project task requires evidence");
     if (!new Set(["normal", "system_unusable_bug"]).has(task.impact)) throw new Error("invalid weekly task impact");
   }

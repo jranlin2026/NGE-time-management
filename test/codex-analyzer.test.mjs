@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCodexAnalyzer, fallbackTaskAnalysis } from "../src/lib/codex-analyzer.mjs";
+import { createCodexAnalyzer, fallbackTaskAnalysis, validateWeeklyPlan } from "../src/lib/codex-analyzer.mjs";
 
 test("returns validated Codex task analysis", async () => {
   const analyzer = createCodexAnalyzer(
@@ -129,6 +129,13 @@ test("returns a validated weekly plan bound to a known deliverable", async () =>
   assert.equal(result.tasks[0].deliverableId, "video-01");
   assert.equal(invocation.mode, "weekly_plan");
   assert.match(invocation.schemaPath, /codex-weekly-plan-schema\.json$/);
+});
+
+test("canonical weekly validation rejects impossible calendar dates", () => {
+  const plan = structuredClone(weeklyPlan);
+  plan.tasks[0].date = "2026-02-31";
+
+  assert.throws(() => validateWeeklyPlan(plan, projects), /invalid weekly task date/);
 });
 
 test("falls back to existing pending deliverables without creating scope", async () => {

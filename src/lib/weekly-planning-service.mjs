@@ -1,3 +1,5 @@
+import { validateWeeklyPlan } from "./codex-analyzer.mjs";
+
 export function createWeeklyPlanningService({ projectRepo, weeklyPlanRepo, projectOps, ops, analyzer, hooks = {}, transaction = (fn) => fn() }) {
   async function generateDraft({ weekId, version: requestedVersion } = {}) {
     const allProjects = await projectRepo.listProjects();
@@ -28,6 +30,7 @@ export function createWeeklyPlanningService({ projectRepo, weeklyPlanRepo, proje
       deliverableChanges: markdown.deliverableChanges,
       tasks: markdown.tasks,
     };
+    validateWeeklyPlan(durablePlan, projects);
     const saved = projectOps.saveWeeklyPlan({
       weekId,
       version,

@@ -102,6 +102,26 @@ test("adopts an orphan draft after file publication and persists its original pl
   assert.equal(fixture.projectOps.getLatestWeeklyPlan("2026-W29").version, 1);
 });
 
+test("rejects a semantically invalid orphan draft without persisting or replacing it", async (t) => {
+  const fixture = await setup();
+  t.after(async () => { fixture.db.close(); await fs.rm(fixture.kbDir, { recursive: true, force: true }); });
+  const invalidPlan = {
+    outcomes: ["伪造孤儿成果"], deliverableChanges: [],
+    tasks: [{ taskId: "orphan-invalid", projectId: "unknown-project", projectName: "伪造项目", milestoneId: "unknown-milestone", deliverableId: "unknown-deliverable", title: "伪造任务", deliverable: "伪造交付", completionStandard: "完成", minutes: 0, date: "not-a-date", requiresEvidence: false, impact: "expanded-scope" }],
+  };
+  const orphan = await fixture.weeklyPlans.writeDraft({ weekId: "2026-W29", version: 1, plan: invalidPlan });
+  const originalContent = await fs.readFile(orphan.filePath, "utf8");
+
+  await assert.rejects(
+    fixture.service.generateDraft({ weekId: "2026-W29", version: 1 }),
+    /unknown weekly task project/,
+  );
+
+  assert.equal(fixture.projectOps.getWeeklyPlan("2026-W29", 1), null);
+  assert.equal(fixture.ops.listOutbox().filter((row) => row.kind === "weekly_plan_card").length, 0);
+  assert.equal(await fs.readFile(orphan.filePath, "utf8"), originalContent);
+});
+
 test("uses the previous confirmed plan while the current week remains unconfirmed", async (t) => {
   const fixture = await setup();
   t.after(async () => { fixture.db.close(); await fs.rm(fixture.kbDir, { recursive: true, force: true }); });
