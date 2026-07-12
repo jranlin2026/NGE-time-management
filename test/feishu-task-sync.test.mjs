@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createFeishuTaskSynchronizer } from "../src/lib/feishu-task-sync.mjs";
+import { buildTaskBody, buildTaskUpdateBody } from "../src/lib/feishu-tasks.mjs";
 
 function syncFixture({ checkpoints = [], links: linksOverride } = {}) {
   const task = { id: "task-1", title: "完成口播视频", description: "", checkpoints };
@@ -234,9 +235,57 @@ test("does not reuse a stored future interval for an incomplete checkpoint absen
 
   await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
 
-  assert.equal(fixture.api.createdChildren[1].startAt, undefined);
-  assert.equal(fixture.api.createdChildren[1].dueAt, undefined);
+  assert.equal(fixture.api.createdChildren[1].startAt, null);
+  assert.equal(fixture.api.createdChildren[1].dueAt, null);
+  const initialCreate = buildTaskBody({}, fixture.api.createdChildren[1], { includeTasklist: false });
+  assert.equal("start" in initialCreate, false);
+  assert.equal("due" in initialCreate, false);
   assert.equal(fixture.api.createdParents[0].dueAt, "2026-07-13T03:10:00.000Z");
+});
+
+test("explicitly clears a linked incomplete child's stale remote interval when its block leaves the remaining schedule", async () => {
+  const schedule = {
+    blocks: [
+      { taskId: "task-ip", checkpointIndex: 0, startsAt: "2026-07-13T02:00:00.000Z", endsAt: "2026-07-13T02:20:00.000Z" },
+      { taskId: "task-ip", checkpointIndex: 1, startsAt: "2026-07-13T02:20:00.000Z", endsAt: "2026-07-13T03:00:00.000Z" },
+    ],
+  };
+  const fixture = detailedSyncFixture({
+    localTasks: [{
+      id: "task-ip",
+      title: "个人IP｜交付3条可剪辑原片",
+      project: "个人IP",
+      nextAction: "确定3个选题",
+      estimateMinutes: 60,
+      doneDefinition: "3条原片可剪辑",
+      status: "scheduled",
+      checkpoints: [
+        { title: "确定3个选题", minutes: 20, doneDefinition: "3个选题已确认", completed: false },
+        { title: "完成脚本", minutes: 40, doneDefinition: "脚本可直接口播", completed: false },
+      ],
+    }],
+    schedule,
+  });
+
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+  schedule.blocks = schedule.blocks.slice(0, 1);
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+
+  const childClear = fixture.api.updated.find((item) => item.guid === "parent-1-child-2");
+  assert.ok(childClear);
+  assert.deepEqual(buildTaskUpdateBody(childClear.body), {
+    task: {
+      summary: "完成脚本",
+      description: childClear.body.description,
+      start: null,
+      due: null,
+    },
+    update_fields: ["summary", "description", "start", "due"],
+  });
+
+  const updatesAfterClear = fixture.api.updated.length;
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+  assert.equal(fixture.api.updated.length, updatesAfterClear);
 });
 
 test("renders a child ending at next-day midnight as 24:00", async () => {

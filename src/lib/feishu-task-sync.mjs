@@ -53,8 +53,8 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
             checkpointIndex,
             childSummary(checkpoint, interval, config.timezone),
             childDescription(checkpoint),
-            interval?.startAt,
-            interval?.dueAt,
+            interval ? interval.startAt : checkpoint.completed ? undefined : null,
+            interval ? interval.dueAt : checkpoint.completed ? undefined : null,
             checkpoint.completed,
           );
           await ensureRemote({
@@ -216,8 +216,8 @@ function managedFields(localTask, checkpointIndex, summary, description, startAt
     description: [description || "", managedMarker].filter(Boolean).join("\n"),
     managedMarker,
     clientToken: stableClientToken(localTask.id, checkpointIndex),
-    ...(startAt ? { startAt } : {}),
-    ...(dueAt ? { dueAt } : {}),
+    ...(startAt !== undefined ? { startAt } : {}),
+    ...(dueAt !== undefined ? { dueAt } : {}),
     ...(completed ? { completedAt: localTask.completedAt || localTask.updatedAt || "1970-01-01T00:00:00.000Z" } : {}),
   };
 }
