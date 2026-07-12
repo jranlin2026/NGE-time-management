@@ -262,7 +262,7 @@ function originalMessageText(message) {
 }
 
 function hasNegatedP0Language(text) {
-  return /(?:没有|并未|未曾|不是|并非|不再).{0,12}(?:损失|亏损|赔付|停单|流失|无法|不能|不可|打不开|瘫痪|宕机|阻塞|影响)/u.test(text);
+  return /(?:没有|尚未|未造成|并未|未曾|不是|并非|不再).{0,12}(?:损失|退款|流失|无法|不能|不可|打不开|瘫痪|宕机|阻塞|影响)/u.test(text);
 }
 
 function parseSourceDeadline(text, workDate) {
@@ -288,8 +288,11 @@ function parseSourceDeadline(text, workDate) {
 function isConcreteCheckpointTitle(title) {
   const text = title.trim();
   if (text.length < 4) return false;
-  if (/(?:一下|整个项目|项目进度|这个事情|这件事|相关工作|后续工作|进一步|持续推进|尽快处理)/u.test(text)) return false;
-  return /(?:写出|列出|确定|完成|提交|发布|录制|拍摄|修复|验证|确认|整理|记录|创建|生成|发送|更新|删除|安装|配置|测试|复核|对比|标注|导出|绘制|实现|起草|交付)/u.test(text);
+  if (/(?:一下|全部工作|所有工作|一些东西|相关内容|整个项目|所有内容|全部内容|项目进度|这个事情|这件事|相关工作|后续工作|进一步|持续推进|尽快处理)/u.test(text)) return false;
+  const hasAction = /(?:写出|列出|确定|完成|提交|发布|录制|拍摄|修复|验证|确认|整理|记录|创建|生成|发送|更新|删除|安装|配置|测试|复核|对比|标注|导出|绘制|实现|起草|交付)/u.test(text);
+  const hasBoundedQuantity = /\d+\s*(?:个|条|份|页|次|张|段|分钟|小时|版|项|家|人)/u.test(text);
+  const hasObservableResult = /(?:脚本|文案|视频|原片|截图|链接|页面|模块|测试|记录|清单|提纲|开头|结尾|代码|需求|方案|数据|名单|日志|复现步骤|案例)/u.test(text);
+  return hasAction && (hasBoundedQuantity || hasObservableResult);
 }
 
 function sourceSupportsInterrupt(item, messagesById, workDate) {
@@ -298,9 +301,14 @@ function sourceSupportsInterrupt(item, messagesById, workDate) {
   const unusableJixiangBug = item.category === "system_bug"
     && item.projectId === "jixiang-os"
     && item.urgency === "high"
+    && /(?:极享\s*OS|jixiang\s*os)/iu.test(sourceText)
     && /(?:完全|全部|系统)?(?:无法|不能|不可)(?:正常)?(?:使用|打开|访问|登录|运行)|打不开|瘫痪|宕机|不可用|全挂/u.test(sourceText);
-  const currentBusinessLoss = !/(?:避免|防止|预防|可能|如果|未来|风险)/u.test(sourceText)
-    && /(?:正在|当前|现在|已经).{0,30}(?:导致|造成|产生|发生|面临|损失|亏损|赔付|停单|无法收款|客户流失)|(?:损失|亏损|赔付|停单|无法收款|客户流失).{0,30}(?:正在|当前|现在|已经)/u.test(sourceText);
+  const explicitLoss = /(?:损失|退款|客户流失|无法下单|不能成交|订单无法提交|收入下降)/u;
+  const zeroLoss = /(?:零\s*(?:损失|退款)|(?:损失|退款|客户流失|收入下降)\s*(?:为|是|=)?\s*(?:0|零))/u.test(sourceText);
+  const currentBusinessLoss = !zeroLoss
+    && !/(?:避免|防止|预防|可能|如果|未来|风险)/u.test(sourceText)
+    && explicitLoss.test(sourceText)
+    && /(?:正在|当前|现在|已经).{0,30}(?:损失|退款|客户流失|无法下单|不能成交|订单无法提交|收入下降)|(?:损失|退款|客户流失|无法下单|不能成交|订单无法提交|收入下降).{0,30}(?:正在|当前|现在|已经)/u.test(sourceText);
   const parsedSourceDeadline = parseSourceDeadline(sourceText, workDate);
   const modelDeadline = item.dueAt === null ? null : new Date(item.dueAt).toISOString();
   const ownerOnlyDeadline = item.mustBeOwner

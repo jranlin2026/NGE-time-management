@@ -399,7 +399,7 @@ test("rejects checkpoint objects whose minutes are outside 15 to 45", async (t) 
     await t.test(`${estimateMinutes} minutes for two checkpoints`, async () => {
       const item = checkpointItem({
         estimateMinutes, checkpoints: [
-          { title: "列出三个问题", minutes: estimateMinutes / 2 },
+          { title: "列出问题清单", minutes: estimateMinutes / 2 },
           { title: "写出解决方案", minutes: estimateMinutes / 2 },
         ],
       });
@@ -421,7 +421,7 @@ test("accepts checkpoint objects at the 15 and 45 minute boundaries", async (t) 
     await t.test(`${estimateMinutes} minutes for two checkpoints`, async () => {
       const item = checkpointItem({
         estimateMinutes, checkpoints: [
-          { title: "列出三个问题", minutes: estimateMinutes / 2 },
+          { title: "列出问题清单", minutes: estimateMinutes / 2 },
           { title: "写出解决方案", minutes: estimateMinutes / 2 },
         ],
       });
@@ -512,6 +512,89 @@ test("downgrades negated or ambiguous interrupt claims and neutralizes reply con
       });
       assert.equal(result.items[0].disposition, "candidate_pool");
       assert.doesNotMatch(result.combinedReplyContext, /立即|马上|中断/);
+    });
+  }
+});
+
+test("does not trust model projectId when source names another unusable system", async () => {
+  const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+    items: [checkpointItem({
+      disposition: "interrupt_now", category: "system_bug", projectId: "jixiang-os", urgency: "high",
+    })],
+    combinedReplyContext: "必须立即处理极享OS故障",
+  }) });
+  const result = await analyzer.analyzeCheckpointMessages({
+    node: "09:00", workDate: "2026-07-13",
+    messages: [{ messageId: "om-safe", content: { text: "另一个系统完全无法使用" } }], context: {},
+  });
+
+  assert.equal(result.items[0].disposition, "candidate_pool");
+  assert.doesNotMatch(result.combinedReplyContext, /立即/);
+});
+
+test("requires explicit nonzero current business loss language", async (t) => {
+  const negatives = [
+    "会议正在发生，大家都在讨论",
+    "现在损失为0",
+    "当前是零损失",
+    "目前尚未造成客户流失",
+  ];
+  for (const text of negatives) {
+    await t.test(`rejects: ${text}`, async () => {
+      const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+        items: [checkpointItem({ disposition: "interrupt_now", urgency: "high" })],
+        combinedReplyContext: "立即止损",
+      }) });
+      const result = await analyzer.analyzeCheckpointMessages({
+        node: "09:00", workDate: "2026-07-13",
+        messages: [{ messageId: "om-safe", content: { text } }], context: {},
+      });
+      assert.equal(result.items[0].disposition, "candidate_pool");
+    });
+  }
+
+  for (const text of ["当前每小时损失5000元", "现在订单无法提交，正在导致客户流失"]) {
+    await t.test(`accepts: ${text}`, async () => {
+      const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+        items: [checkpointItem({ disposition: "interrupt_now", urgency: "high" })],
+        combinedReplyContext: "立即止损",
+      }) });
+      const result = await analyzer.analyzeCheckpointMessages({
+        node: "09:00", workDate: "2026-07-13",
+        messages: [{ messageId: "om-safe", content: { text } }], context: {},
+      });
+      assert.equal(result.items[0].disposition, "interrupt_now");
+    });
+  }
+});
+
+test("checkpoint concreteness requires an action plus bounded quantity or observable result", async (t) => {
+  const negatives = ["完成全部工作", "整理一些东西", "更新相关内容"];
+  for (const title of negatives) {
+    await t.test(`rejects: ${title}`, async () => {
+      const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+        items: [checkpointItem({ checkpoints: [{ title, minutes: 30 }] })],
+        combinedReplyContext: "今天处理",
+      }) });
+      const result = await analyzer.analyzeCheckpointMessages({
+        node: "09:00", workDate: "2026-07-13",
+        messages: [{ messageId: "om-safe", content: { text: "今天处理" } }], context: {},
+      });
+      assert.equal(result.analysisStatus, "failed");
+    });
+  }
+
+  for (const title of ["写出3个开头", "完成脚本第一版", "导出测试日志", "列出客户名单"]) {
+    await t.test(`accepts: ${title}`, async () => {
+      const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+        items: [checkpointItem({ checkpoints: [{ title, minutes: 30 }] })],
+        combinedReplyContext: "今天处理",
+      }) });
+      const result = await analyzer.analyzeCheckpointMessages({
+        node: "09:00", workDate: "2026-07-13",
+        messages: [{ messageId: "om-safe", content: { text: "今天处理" } }], context: {},
+      });
+      assert.equal(result.analysisStatus, "complete");
     });
   }
 });
