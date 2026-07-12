@@ -70,7 +70,7 @@ test("updates only when the managed snapshot changes", async () => {
   assert.deepEqual(fixture.api.updated.map((item) => item.guid), ["parent-1"]);
 });
 
-test("adopts a remotely created task after the local link write is lost", async () => {
+test("updates an adopted remote task before persisting the current snapshot", async () => {
   const storedLinks = new Map();
   let failWrite = true;
   const links = {
@@ -84,11 +84,24 @@ test("adopts a remotely created task after the local link write is lost", async 
   };
   const fixture = syncFixture({ links });
   await assert.rejects(fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule }), /link write crash/);
+  fixture.schedule.blocks[0].endsAt = "2026-07-13T04:30:00.000Z";
   await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
 
   assert.equal(fixture.api.createdParents.length, 1);
+  assert.deepEqual(fixture.api.updated, [{
+    guid: "parent-1",
+    body: {
+      summary: "完成口播视频",
+      description: "",
+      clientToken: fixture.api.createdParents[0].clientToken,
+      startAt: "2026-07-13T02:00:00.000Z",
+      dueAt: "2026-07-13T04:30:00.000Z",
+    },
+  }]);
   assert.equal(links.findFeishuLink("task-1", -1).taskGuid, "parent-1");
   assert.match(fixture.api.createdParents[0].clientToken, /^nge-[a-f0-9]{64}$/);
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
+  assert.equal(fixture.api.updated.length, 1);
 });
 
 test("pulls progress only for task ids in the requested date schedule", async () => {

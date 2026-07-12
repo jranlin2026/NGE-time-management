@@ -78,6 +78,7 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
     if (!existing) {
       const remote = remoteTasks.find((task) => (task.client_token || task.clientToken) === fields.clientToken);
       if (remote?.guid) {
+        await api.updateTask(config, remote.guid, fields);
         return links.upsertFeishuLink({
           localTaskId: localTask.id,
           checkpointIndex,
