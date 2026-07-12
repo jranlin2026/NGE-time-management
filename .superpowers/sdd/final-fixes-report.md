@@ -47,3 +47,11 @@ Implemented all eight final whole-branch review fixes without starting, stopping
 - RED proved that message B, revealed between A's failed run and retry, was incorrectly finalized with A. GREEN proves A alone is retried without another analyzer call, B remains pending, and the next node independently analyzes B. Legacy snapshot coverage also proves B is not absorbed.
 - Focused runner/repository/E2E verification: `31` passed, `0` failed.
 - Final full-suite verification: `335` passed, `0` failed, `0` skipped.
+
+## Atomic Checkpoint Finalization
+
+- `finalizeInbound` now uses one `BEGIN IMMEDIATE` transaction to verify the active claim, validate and mark the exact analysis batch, advance the cursor, and complete `automation_runs` with `completed_at` and the final summary. The persisted analysis snapshot is preserved.
+- The checkpoint runner updates its summary before this transaction, passes it into `finalizeInbound`, and no longer calls `completeRun` afterward. `completeRun` remains available for existing non-runner callers and fencing tests.
+- RED proved successful inbound finalization could leave a running run and that the runner still used the split completion call. GREEN proves success cannot persist processed messages with a running run, validation failure rolls the whole transaction back, and a simulated pre-atomic failure retries the original persisted batch with one analyzer call and the same outbox idempotency identity/provider UUID input.
+- Focused atomic runner/repository/E2E/database verification: `38` passed, `0` failed.
+- Final full-suite verification: `336` passed, `0` failed, `0` skipped.

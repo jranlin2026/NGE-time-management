@@ -154,7 +154,7 @@ export function createAutomationRepository(db, deps = {}) {
       return mapCursor(db.prepare("SELECT * FROM message_cursors WHERE chat_id=?").get(chatId));
     },
 
-    finalizeInbound({ chatId, messageIds, runKey, claimToken, polledThrough }) {
+    finalizeInbound({ chatId, messageIds, runKey, claimToken, polledThrough, summary = {} }) {
       return withTransaction(db, () => {
         const ownsRun = db.prepare(`SELECT 1 FROM automation_runs
           WHERE run_key=? AND claim_token=? AND status='running'`).get(runKey, claimToken);
@@ -173,7 +173,11 @@ export function createAutomationRepository(db, deps = {}) {
         db.prepare(`INSERT INTO message_cursors(chat_id,polled_through,updated_at) VALUES (?,?,?)
           ON CONFLICT(chat_id) DO UPDATE SET polled_through=excluded.polled_through, updated_at=excluded.updated_at
           WHERE message_cursors.polled_through < excluded.polled_through`).run(chatId, polledThrough, timestamp);
-        return mapCursor(db.prepare("SELECT * FROM message_cursors WHERE chat_id=?").get(chatId));
+        const completed = db.prepare(`UPDATE automation_runs SET status='completed', completed_at=?, error=NULL, summary_json=?
+          WHERE run_key=? AND claim_token=? AND status='running'`)
+          .run(timestamp, JSON.stringify(summary ?? {}), runKey, claimToken);
+        if (completed.changes !== 1) throw new Error("inbound finalization could not complete the current run");
+        return mapRun(db.prepare("SELECT * FROM automation_runs WHERE run_key=?").get(runKey));
       });
     },
 

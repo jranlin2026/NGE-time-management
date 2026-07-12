@@ -28,15 +28,19 @@ test("does not process one inbound message twice", () => {
   repo.recordInbound([message, message]);
   assert.deepEqual(repo.listPendingInbound("oc-p2p").map((item) => item.messageId), ["om-1"]);
   const claim = repo.claimRun({ runKey: "2026-07-13:09:00", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" });
-  repo.finalizeInbound({
+  const finalized = repo.finalizeInbound({
     chatId: "oc-p2p",
     messageIds: ["om-1"],
     runKey: "2026-07-13:09:00",
     claimToken: claim.claimToken,
     polledThrough: "2026-07-13T01:00:00.000Z",
+    summary: { messagesProcessed: 1 },
   });
   assert.deepEqual(repo.listPendingInbound("oc-p2p"), []);
   assert.equal(repo.getMessageCursor("oc-p2p").polledThrough, "2026-07-13T01:00:00.000Z");
+  assert.equal(finalized.status, "completed");
+  assert.deepEqual(finalized.summary, { messagesProcessed: 1 });
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM automation_runs WHERE status='running'").get().count, 0);
   db.close();
 });
 
@@ -81,6 +85,7 @@ test("rolls back message processing without advancing the cursor when finalizati
   }), /every pending inbound message/);
   assert.deepEqual(repo.listPendingInbound("oc-p2p").map((item) => item.messageId), ["om-1"]);
   assert.equal(repo.getMessageCursor("oc-p2p"), null);
+  assert.equal(db.prepare("SELECT status FROM automation_runs WHERE run_key='run-1'").get().status, "running");
   db.close();
 });
 

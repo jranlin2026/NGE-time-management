@@ -125,6 +125,24 @@ test("legacy analysis snapshot derives its batch from item message ids, never al
   assert.deepEqual(fixture.pending.map((item) => item.messageId), ["om-b"]);
 });
 
+test("pre-atomic finalization failure retries the original batch and outbox identity once", async () => {
+  let analyzerCalls = 0;
+  const fixture = runnerFixture({
+    messages: [message("om-a", "A")], persistAnalysis: true, finalizeErrorOnce: true,
+    analyze: async () => { analyzerCalls += 1; return { items: [{ messageIds: ["om-a"], disposition: "candidate_pool" }] }; },
+    applyPolicy: async () => ({ replyRequired: true, reply: "同一回复", actions: [], schedule: { version: 4, blocks: [] } }),
+  });
+  await assert.rejects(fixture.runner.run({ now: "2026-07-13T09:00:00+08:00", forcedNode: "09:00" }), /before atomic finalize/);
+  assert.deepEqual(fixture.pending.map((item) => item.messageId), ["om-a"]);
+  await fixture.runner.run({ now: "2026-07-13T09:00:00+08:00", forcedNode: "09:00" });
+  assert.equal(analyzerCalls, 1);
+  const keys = fixture.outbox.map((item) => item.idempotencyKey);
+  assert.equal(keys.length, 2);
+  assert.equal(keys[0], keys[1]);
+  assert.equal(fixture.calls.includes("complete"), false);
+  assert.deepEqual(fixture.pending, []);
+});
+
 test("refuses to queue a private summary without the owner open_id", async () => {
   const fixture = runnerFixture({ messages: [message("om-1", "新增任务")], managerUserId: "" });
   await assert.rejects(() => fixture.runner.run({ now: "2026-07-13T09:00:00+08:00", forcedNode: "09:00" }), /owner open_id/);
@@ -266,7 +284,7 @@ test("pre-recorded pending messages remain isolated by each catch-up cutoff", as
   assert.deepEqual(fixture.finalizedThrough, ["2026-07-12T16:00:00.000Z", "2026-07-13T00:00:00.000Z", "2026-07-13T01:00:00.000Z"]);
 });
 
-function runnerFixture({ messages = [], pendingMessages = [], pollMessages, completedNodes = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, reconcileProjectWrites, buildAnalysisContext, analyze, applyPolicy, pushSchedule, persistAnalysis = false, executionNow, onClaimLock } = {}) {
+function runnerFixture({ messages = [], pendingMessages = [], pollMessages, completedNodes = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, reconcileProjectWrites, buildAnalysisContext, analyze, applyPolicy, pushSchedule, persistAnalysis = false, finalizeErrorOnce = false, executionNow, onClaimLock } = {}) {
   const calls = [];
   const claims = [];
   const polls = [];
@@ -274,6 +292,7 @@ function runnerFixture({ messages = [], pendingMessages = [], pollMessages, comp
   const pending = [...pendingMessages];
   const finalizedThrough = [];
   let cursor = null;
+  let shouldFailFinalize = finalizeErrorOnce;
   const savedAnalyses = new Map();
   const runtime = {
     claimLock: (input) => { calls.push("lock"); onClaimLock?.(input); return !lockHeld; },
@@ -294,6 +313,7 @@ function runnerFixture({ messages = [], pendingMessages = [], pollMessages, comp
       : pending,
     finalizeInbound: ({ messageIds, polledThrough, claimToken }) => {
       calls.push("finalize");
+      if (shouldFailFinalize) { shouldFailFinalize = false; throw new Error("before atomic finalize"); }
       finalizedThrough.push(polledThrough);
       assert.equal(claimToken, "claim-1");
       pending.splice(0, pending.length, ...pending.filter((item) => !messageIds.includes(item.messageId)));

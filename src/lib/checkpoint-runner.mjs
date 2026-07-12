@@ -102,18 +102,18 @@ export function createCheckpointRunner(deps) {
             summary.repliesQueued += 1;
           }
           await deps.outboxWorker.flush({ throwOnFailure: true });
+          summary.messagesProcessed += analysisBatch.length;
+          summary.tasksCreated += countActions(result.actions, "task_created");
+          summary.tasksUpdated += countUpdated(result.actions);
+          summary.reviewCreated += countActions(result.actions, "daily_review");
           await deps.runtime.finalizeInbound({
             chatId,
             messageIds: analysisBatch.map((message) => message.messageId),
             runKey,
             claimToken: claim.claimToken,
             polledThrough: pollThrough,
+            summary,
           });
-          summary.messagesProcessed += analysisBatch.length;
-          summary.tasksCreated += countActions(result.actions, "task_created");
-          summary.tasksUpdated += countUpdated(result.actions);
-          summary.reviewCreated += countActions(result.actions, "daily_review");
-          await deps.runtime.completeRun(runKey, claim.claimToken, summary);
           activeRun = null;
         }
         return summary;
