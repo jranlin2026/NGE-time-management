@@ -68,6 +68,21 @@ test("schedules at most three tasks inside available windows", () => {
   assert.equal(result.blocks.at(-1).endsAt, "2026-07-10T10:00:00.000Z");
 });
 
+test("does not pull a future-dated task into an earlier daily plan", () => {
+  const schedule = buildDailySchedule({
+    date: "2026-07-13",
+    now: "2026-07-13T00:00:00.000Z",
+    settings: { timezone: "Asia/Shanghai", windows: [["10:00", "18:00"]], maxCriticalTasks: 5 },
+    tasks: [
+      { ...task("today", "极享OS", 60), dueAt: "2026-07-13" },
+      { ...task("tomorrow", "极享OS", 60), dueAt: "2026-07-14" },
+    ],
+  });
+
+  assert.deepEqual([...new Set(schedule.blocks.map((block) => block.taskId))], ["today"]);
+  assert.deepEqual(schedule.deferred, ["tomorrow"]);
+});
+
 test("applies dated personal-IP boost and preserves doing block during replan", () => {
   const tasks = [
     {

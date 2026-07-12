@@ -48,6 +48,20 @@ test("creates one child per local checkpoint exactly once", async () => {
   assert.deepEqual(fixture.links.listFeishuLinks("task-1").map((link) => link.checkpointIndex).sort(), [-1, 0, 1]);
 });
 
+test("records a child when Feishu returns it under data.subtask", async () => {
+  const fixture = syncFixture({ checkpoints: [{ title: "写脚本", completed: false }] });
+  fixture.api.createSubtask = async function createSubtask(_config, parentGuid, body) {
+    this.createdChildren.push(body);
+    const subtask = { guid: "child-subtask-shape", parent_guid: parentGuid, client_token: body.clientToken };
+    this.remoteChildren.push(subtask);
+    return { data: { subtask } };
+  };
+
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
+
+  assert.equal(fixture.links.findFeishuLink("task-1", 0).taskGuid, "child-subtask-shape");
+});
+
 test("pulls one child completion without completing its parent or mutating local state", async () => {
   const fixture = syncFixture({ checkpoints: [{ title: "写脚本", completed: false }, { title: "拍摄", completed: false }] });
   await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });

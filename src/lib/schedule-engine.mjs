@@ -5,8 +5,9 @@ const ACTIVE_STATUSES = new Set(["inbox", "open", "ready", "scheduled", "doing",
 export function buildDailySchedule({ date, now, tasks, settings }) {
   const nowDate = new Date(now);
   const maxCriticalTasks = normalizedMaxCriticalTasks(settings.maxCriticalTasks);
+  const futureTasks = tasks.filter((task) => ACTIVE_STATUSES.has(task.status || "ready") && !isDueBy(task, date));
   const ranked = tasks
-    .filter((task) => ACTIVE_STATUSES.has(task.status || "ready"))
+    .filter((task) => ACTIVE_STATUSES.has(task.status || "ready") && isDueBy(task, date))
     .map((task) => {
       const details = scoreTaskDetails(task, nowDate, {
         date,
@@ -56,6 +57,7 @@ export function buildDailySchedule({ date, now, tasks, settings }) {
   const deferred = [
     ...unfinished,
     ...ranked.filter((item) => !selectedIds.has(item.task.id)).map((item) => item.task.id),
+    ...futureTasks.map((task) => task.id),
   ];
   const capacityWarnings = capacityWarningsFor({ blocks, tasks, settings });
   return {
@@ -65,6 +67,11 @@ export function buildDailySchedule({ date, now, tasks, settings }) {
     reasons: Object.fromEntries(scheduled.map((item) => [item.task.id, renderReason(item)])),
     capacityWarnings,
   };
+}
+
+function isDueBy(task, date) {
+  if (!task.dueAt) return true;
+  return String(task.dueAt).slice(0, 10) <= date;
 }
 
 function orderRankedTasks(ranked, projectMinimums) {

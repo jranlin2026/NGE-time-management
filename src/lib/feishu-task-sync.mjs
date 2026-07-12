@@ -130,7 +130,7 @@ function hash(value) {
 }
 
 function extractGuid(response) {
-  return response?.data?.task?.guid || response?.data?.guid || response?.task?.guid || "";
+  return response?.data?.task?.guid || response?.data?.subtask?.guid || response?.data?.guid || response?.task?.guid || "";
 }
 
 function completedAt(task) {
