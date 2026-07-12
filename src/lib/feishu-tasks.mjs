@@ -164,6 +164,8 @@ export function buildTaskBody(config, task, options = {}) {
     description: task.description || "",
   };
 
+  if (task.clientToken) body.client_token = task.clientToken;
+
   if (task.dueDate) {
     body.due = {
       timestamp: String(new Date(`${task.dueDate}T18:00:00+08:00`).getTime()),

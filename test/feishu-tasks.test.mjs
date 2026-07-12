@@ -26,11 +26,13 @@ test("creates timed parents in the tasklist and children outside it", () => {
   const config = { feishuTasklistGuid: "list-1", feishuTaskAssigneeId: "ou-owner" };
   const parent = buildTaskBody(config, {
     summary: "拍摄视频",
+    clientToken: "local-task-1-parent",
     startAt: "2026-07-13T02:00:00.000Z",
     dueAt: "2026-07-13T04:00:00.000Z",
   });
   const child = buildTaskBody(config, {
     summary: "写脚本",
+    clientToken: "local-task-1-checkpoint-0",
     dueAt: "2026-07-13T02:30:00.000Z",
   }, { includeTasklist: false });
 
@@ -38,6 +40,8 @@ test("creates timed parents in the tasklist and children outside it", () => {
   assert.equal(parent.start.timestamp, "1783908000000");
   assert.equal(parent.due.timestamp, "1783915200000");
   assert.deepEqual(parent.tasklists, [{ tasklist_guid: "list-1" }]);
+  assert.equal(parent.client_token, "local-task-1-parent");
+  assert.equal(child.client_token, "local-task-1-checkpoint-0");
   assert.equal("tasklists" in child, false);
 });
 
