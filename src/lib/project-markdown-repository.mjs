@@ -33,6 +33,11 @@ function hash(content) {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
+function isManagedProjectDocument(content) {
+  const frontmatter = String(content).match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1] || "";
+  return /^project_id\s*:/m.test(frontmatter) || content.includes(START) || content.includes(END);
+}
+
 function parseFrontmatter(raw) {
   const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   if (!match) fail("project frontmatter is missing or malformed");
@@ -263,7 +268,13 @@ export function createProjectMarkdownRepository(deps) {
   }
 
   async function listProjects() {
-    return Promise.all((await projectFiles()).map(readFile));
+    const documents = await Promise.all((await projectFiles()).map(async (filePath) => ({
+      filePath,
+      content: await fs.readFile(filePath, "utf8"),
+    })));
+    return documents
+      .filter(({ content }) => isManagedProjectDocument(content))
+      .map(({ content, filePath }) => parseProject(content, filePath));
   }
 
   async function readProject(projectId) {

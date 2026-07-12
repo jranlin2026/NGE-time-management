@@ -193,6 +193,19 @@ test("lists valid project markdown files", async () => {
   assert.deepEqual(projects.map((project) => project.id), ["personal-ip"]);
 });
 
+test("ignores unrelated markdown files in the project knowledge folder", async () => {
+  await writeProject(root);
+  const unrelatedPath = path.join(root, "项目", "产品需求.md");
+  const unrelated = `---\n类型: 产品需求\n状态: 已完成\n---\n\n# 普通知识文档\n\n这里不是自动管理项目。\n`;
+  await fs.writeFile(unrelatedPath, unrelated, "utf8");
+
+  const repo = createProjectMarkdownRepository({ kbDir: root });
+  const projects = await repo.listProjects();
+
+  assert.deepEqual(projects.map((project) => project.id), ["personal-ip"]);
+  assert.equal(await fs.readFile(unrelatedPath, "utf8"), unrelated);
+});
+
 test("creates missing draft templates without replacing existing files", async () => {
   const existing = await writeProject(root);
   const original = await fs.readFile(existing, "utf8");
