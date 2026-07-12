@@ -35,6 +35,7 @@ export function loadConfig(env = process.env) {
     feishuEncryptKey: merged.FEISHU_ENCRYPT_KEY || "",
     feishuReceiveId: merged.FEISHU_RECEIVE_ID || "",
     feishuReceiveIdType: merged.FEISHU_RECEIVE_ID_TYPE || "open_id",
+    feishuP2pChatId: merged.FEISHU_P2P_CHAT_ID || "",
     dataDir,
     dbPath: path.resolve(merged.TIME_MASTER_DB_PATH || path.join(dataDir, "time-manager.sqlite")),
     backupDir: path.resolve(merged.TIME_MASTER_BACKUP_DIR || path.join(dataDir, "backups")),

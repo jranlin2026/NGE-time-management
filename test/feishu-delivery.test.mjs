@@ -28,12 +28,12 @@ test("uses the personal receiver after it is bound", async () => {
     {
       sendDirect: async () => {
         directCalls += 1;
-        return { externalId: "om_direct" };
+        return { externalId: "om_direct", chatId: "oc_direct" };
       },
       sendWebhook: async () => { throw new Error("webhook should not run"); },
     },
   );
 
   assert.equal(directCalls, 1);
-  assert.deepEqual(result, { externalId: "om_direct" });
+  assert.deepEqual(result, { externalId: "om_direct", chatId: "oc_direct" });
 });

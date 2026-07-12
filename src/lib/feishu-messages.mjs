@@ -70,7 +70,10 @@ export async function sendFeishuMessage(config, payload) {
     `/im/v1/messages?receive_id_type=${encodeURIComponent(receiveIdType)}`,
     { method: "POST", body },
   );
-  return { externalId: response?.data?.message_id || "" };
+  return {
+    externalId: response?.data?.message_id || "",
+    chatId: response?.data?.chat_id || "",
+  };
 }
 
 export async function syncFeishuTask(config, operation) {
