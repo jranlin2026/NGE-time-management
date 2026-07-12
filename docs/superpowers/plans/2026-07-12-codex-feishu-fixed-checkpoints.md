@@ -350,6 +350,8 @@ git commit -m "feat: synchronize Feishu parent tasks and subtasks"
 - Produces: `analyzer.analyzeCheckpointMessages({ node, workDate, messages, context })`.
 - Returns: `{ items, combinedReplyContext, analysisStatus, analysisError? }`.
 - Each item has `messageIds`, `category`, `disposition`, `title`, `projectId`, `urgency`, `mustBeOwner`, `estimateMinutes`, `dueAt`, `nextAction`, `doneDefinition`, `checkpoints`, and `rationale`.
+- Each checkpoint is `{ title, minutes }`, where `minutes` is an integer from 15 through 45; string-only checkpoints are invalid.
+- `interrupt_now` must carry a source-grounded P0 condition that deterministic validation can prove from the referenced message text; model classification alone is never sufficient.
 
 - [ ] **Step 1: Write failing analyzer tests**
 
@@ -361,7 +363,11 @@ test("analyzes one interval as one batch", async () => {
       title: "老板为什么要学Codex", projectId: "personal-ip", urgency: "low",
       mustBeOwner: true, estimateMinutes: 40, dueAt: null,
       nextAction: "写出一个真实成本案例", doneDefinition: "形成60秒脚本第一版",
-      checkpoints: ["确定真实案例", "写出开头钩子", "完成脚本第一版"],
+      checkpoints: [
+        { title: "确定真实案例", minutes: 15 },
+        { title: "写出开头钩子", minutes: 15 },
+        { title: "完成脚本第一版", minutes: 30 },
+      ],
       rationale: "符合个人IP获客方向，但不应打断当前拍摄",
     }],
     combinedReplyContext: "一条有效选题进入候选池",
@@ -387,7 +393,7 @@ test("invalid AI output falls back to candidate review", async () => {
 
 - [ ] **Step 3: Add the strict schema**
 
-Use category enum `task`, `idea`, `system_bug`, `meeting`, `blocker`, `defer_reason`, `evidence`, `communication`; disposition enum `interrupt_now`, `schedule_today`, `candidate_pool`, `do_not_schedule`, `task_feedback`, `evidence_submission`, `no_action`; urgency enum `high`, `medium`, `low`. Require every field, allow nullable `dueAt`/`projectId`, limit checkpoints to 1–8 strings, and set `additionalProperties: false`.
+Use category enum `task`, `idea`, `system_bug`, `meeting`, `blocker`, `defer_reason`, `evidence`, `communication`; disposition enum `interrupt_now`, `schedule_today`, `candidate_pool`, `do_not_schedule`, `task_feedback`, `evidence_submission`, `no_action`; urgency enum `high`, `medium`, `low`. Require every field, allow nullable `dueAt`/`projectId`, limit checkpoints to 1–8 objects with required `title` and integer `minutes` from 15 through 45, and set `additionalProperties: false` at every object level.
 
 - [ ] **Step 4: Implement prompt, validation, and fallback**
 
