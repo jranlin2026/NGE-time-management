@@ -4,6 +4,7 @@ import { openDatabase, withTransaction } from "../src/db/database.mjs";
 import { createTaskRepository } from "../src/db/task-repository.mjs";
 import { createOperationsRepository } from "../src/db/operations-repository.mjs";
 import { createManagerService } from "../src/lib/manager-service.mjs";
+import { createCheckpointPolicy } from "../src/lib/checkpoint-policy.mjs";
 
 const NOW = "2026-07-10T00:30:00.000Z";
 
@@ -108,14 +109,76 @@ test("task_dm replanning keeps schedule side effects but does not enqueue a task
   db.close();
 });
 
-test("task_dm action replanning does not leak a replan card", async () => {
+test("12:00 policy puts a new today disposition into the real capacity-limited schedule", async () => {
+  const { db, tasks, ops, manager } = setup();
+  const policy = createCheckpointPolicy({ manager, tasks });
+
+  const result = await policy.apply({
+    node: "12:00", workDate: "2026-07-10", messages: [{ messageId: "om-real-12" }],
+    remoteProgress: { completedParents: [], completedCheckpoints: [] },
+    analysis: { items: [{
+      disposition: "schedule_today", title: "真实午间排程", estimateMinutes: 30,
+      checkpoints: [{ title: "导出午间脚本", minutes: 30 }],
+    }] },
+  });
+
+  assert.equal(result.schedule.blocks.some((block) => block.taskId === tasks.findByTitle("真实午间排程")[0].id), true);
+  assert.equal(ops.listOutbox().some((row) => row.kind === "replan_card"), false);
+  db.close();
+});
+
+test("15:00 policy preserves real doing work and schedules the new today task", async () => {
+  const { db, tasks, manager } = setup();
+  const doing = tasks.create({ id: "real-doing", rawInput: "当前核心任务", status: "doing", estimateMinutes: 30 });
+  await manager.replanDay({ date: "2026-07-10", now: NOW, deliveryMode: "task_dm" });
+  const policy = createCheckpointPolicy({ manager, tasks });
+
+  const result = await policy.apply({
+    node: "15:00", workDate: "2026-07-10", messages: [{ messageId: "om-real-15" }],
+    remoteProgress: { completedParents: [], completedCheckpoints: [] },
+    analysis: { items: [{
+      disposition: "schedule_today", title: "真实下午排程", estimateMinutes: 30,
+      checkpoints: [{ title: "导出下午交付", minutes: 30 }],
+    }] },
+  });
+
+  const created = tasks.findByTitle("真实下午排程")[0];
+  assert.equal(result.schedule.blocks[0].taskId, doing.id);
+  assert.equal(result.schedule.blocks.some((block) => block.taskId === created.id), true);
+  db.close();
+});
+
+test("silent task_dm action queues no standalone owner message", async () => {
   const { db, tasks, ops, manager } = setup();
   tasks.create({ id: "remote-done", rawInput: "远端完成", status: "doing" });
 
-  await manager.handleAction({ action: "complete", taskId: "remote-done", idempotencyKey: "feishu-parent:1", deliveryMode: "task_dm" });
+  await manager.handleAction({ action: "complete", taskId: "remote-done", idempotencyKey: "feishu-parent:1", deliveryMode: "task_dm", suppressOutbox: true });
 
   assert.equal(ops.listOutbox().some((row) => row.kind === "replan_card"), false);
-  assert.equal(ops.listOutbox().some((row) => row.kind === "status_message"), true);
+  assert.equal(ops.listOutbox().some((row) => row.kind === "status_message"), false);
+  db.close();
+});
+
+test("silent evidence-gated completion preserves acceptance without an evidence card", async () => {
+  const { db, tasks, ops, manager } = setup();
+  tasks.create({ id: "silent-evidence", rawInput: "证据交付", status: "doing", requiresEvidence: true });
+
+  const result = await manager.handleAction({ action: "complete", taskId: "silent-evidence", idempotencyKey: "feishu-parent:evidence", deliveryMode: "task_dm", suppressOutbox: true });
+
+  assert.equal(result.action, "evidence_required");
+  assert.equal(tasks.findById("silent-evidence").status, "pending_acceptance");
+  assert.equal(ops.listOutbox().some((row) => row.kind === "evidence_request_card"), false);
+  db.close();
+});
+
+test("silent checkpoint completion queues no standalone status", async () => {
+  const { db, tasks, ops, manager } = setup();
+  tasks.create({ id: "silent-child", rawInput: "关卡", status: "doing", checkpoints: ["写脚本"] });
+
+  await manager.handleAction({ action: "complete_checkpoint", taskId: "silent-child", checkpointIndex: 0, idempotencyKey: "feishu-child:1", suppressOutbox: true });
+
+  assert.equal(tasks.findById("silent-child").checkpoints[0].completed, true);
+  assert.equal(ops.listOutbox().some((row) => row.kind === "status_message"), false);
   db.close();
 });
 

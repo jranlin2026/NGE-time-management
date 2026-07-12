@@ -367,9 +367,13 @@ function validateCheckpointAnalysis(value, messages, workDate) {
         || !Number.isInteger(entry.minutes) || entry.minutes < 15 || entry.minutes > 45)) {
       throw new Error("invalid checkpoint checkpoints");
     }
-    if (item.disposition === "interrupt_now" && !sourceSupportsInterrupt(item, messagesById, workDate)) {
-      item.disposition = "candidate_pool";
-      downgradedInterrupt = true;
+    if (item.disposition === "interrupt_now") {
+      if (sourceSupportsInterrupt(item, messagesById, workDate)) {
+        item.groundedP0 = true;
+      } else {
+        item.disposition = "candidate_pool";
+        downgradedInterrupt = true;
+      }
     }
   }
   if (classifiedMessageIds.size !== knownMessageIds.size) throw new Error("missing checkpoint message classification");

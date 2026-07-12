@@ -26,7 +26,7 @@ export function dueCheckpointNodes({ now = new Date(), timezone = "Asia/Shanghai
     || completed.has(`${date}T${node}`);
   const nodes = [];
 
-  if (context.currentNode === "08:00") {
+  if (context.currentNode !== "24:00") {
     const previousDate = addLocalDays(context.workDate, -1);
     if (!isComplete("24:00", previousDate)) nodes.push("24:00");
   }

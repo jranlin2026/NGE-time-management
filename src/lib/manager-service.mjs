@@ -112,7 +112,7 @@ export function createManagerService(deps) {
 
     const task = resolution.task;
     if (input.action === "complete" && task.requiresEvidence) {
-      const pending = await acceptance.request(task, { idempotencyKey: input.idempotencyKey });
+      const pending = await acceptance.request(task, { idempotencyKey: input.idempotencyKey, suppressOutbox: input.suppressOutbox });
       ops.cancelPendingReminders(task.id);
       return { action: "evidence_required", task: tasks.findById(task.id), acceptance: pending };
     }
@@ -129,11 +129,13 @@ export function createManagerService(deps) {
           payload: { checkpointIndex, title: saved.checkpoints[checkpointIndex].title },
           idempotencyKey: input.idempotencyKey || null,
         });
-        ops.enqueueOutbox({
-          kind: "status_message",
-          payload: { text: `已完成关卡：${saved.checkpoints[checkpointIndex].title}\n继续推进：${saved.title}`, taskId: saved.id },
-          idempotencyKey: input.idempotencyKey ? `outbox:${input.idempotencyKey}` : `checkpoint:${task.id}:${checkpointIndex}:${Date.now()}`,
-        });
+        if (!input.suppressOutbox) {
+          ops.enqueueOutbox({
+            kind: "status_message",
+            payload: { text: `已完成关卡：${saved.checkpoints[checkpointIndex].title}\n继续推进：${saved.title}`, taskId: saved.id },
+            idempotencyKey: input.idempotencyKey ? `outbox:${input.idempotencyKey}` : `checkpoint:${task.id}:${checkpointIndex}:${Date.now()}`,
+          });
+        }
         return saved;
       });
       return { action: input.action, task: updated };
@@ -192,13 +194,13 @@ export function createManagerService(deps) {
         },
         idempotencyKey: input.idempotencyKey || null,
       });
-      if (minimum) {
+      if (minimum && !input.suppressOutbox) {
         ops.enqueueOutbox({
           kind: "intervention_card",
           payload: { task: saved, minimumAction: minimum.action, minutes: 15 },
           idempotencyKey: input.idempotencyKey ? `outbox:${input.idempotencyKey}` : `blocked:${task.id}:${Date.now()}`,
         });
-      } else {
+      } else if (!input.suppressOutbox) {
         ops.enqueueOutbox({
           kind: "status_message",
           payload: { text: renderStatusMessage(input.action, saved), taskId: saved.id },

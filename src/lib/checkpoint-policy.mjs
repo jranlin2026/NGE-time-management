@@ -31,6 +31,7 @@ export function createCheckpointPolicy(deps) {
       await applyRemoteProgress(state, deps);
       await applyDeterministicItems(state, deps);
       await createActionableTasks(state, deps);
+      await replanCreatedTasks(state, deps);
       await handler(state, deps);
       const reply = state.replyParts.filter(Boolean).join("\n");
       return {
@@ -56,18 +57,24 @@ async function applyRemoteProgress(state, deps) {
       checkpointIndex: change.checkpointIndex,
       idempotencyKey: `feishu-checkpoint:${change.taskGuid}:${change.completedAt}`,
       deliveryMode: "task_dm",
+      suppressOutbox: true,
     });
     state.actions.push({ type: "checkpoint_completed", taskId: change.localTaskId, checkpointIndex: change.checkpointIndex });
+    state.replyParts.push(`已同步完成关卡：${task?.checkpoints?.[change.checkpointIndex]?.title || change.localTaskId}`);
     state.changed = true;
   }
   for (const change of state.remoteProgress.completedParents || []) {
-    await deps.manager.handleAction({
+    const result = await deps.manager.handleAction({
       action: "complete",
       taskId: change.localTaskId,
       idempotencyKey: `feishu-parent:${change.taskGuid}:${change.completedAt}`,
       deliveryMode: "task_dm",
+      suppressOutbox: true,
     });
     state.actions.push({ type: "parent_completed", taskId: change.localTaskId });
+    state.replyParts.push(result?.action === "evidence_required"
+      ? `已同步主任务完成：${change.localTaskId}。请补充验收证据。`
+      : `已同步主任务完成：${change.localTaskId}`);
     state.changed = true;
   }
 }
@@ -96,14 +103,33 @@ async function applyDeterministicItems(state, deps) {
 async function createActionableTasks(state, deps) {
   for (const item of state.analysis.items || []) {
     if (!ACTIONABLE_DISPOSITIONS.has(item.disposition)) continue;
+    if (item.disposition === "interrupt_now" && item.groundedP0 !== true) {
+      state.actions.push({ type: "candidate_recorded", title: item.title, reason: "ungrounded_interrupt" });
+      state.replyParts.push(`已进入候选池：${item.title}`);
+      state.changed = true;
+      continue;
+    }
     const created = await deps.tasks.create(taskInput(item));
     state.actions.push({ type: "task_created", disposition: item.disposition, taskId: created.id });
-    if (item.disposition === "interrupt_now") {
+    const doing = deps.tasks.findDoing?.();
+    if (item.disposition === "interrupt_now" && doing && doing.id !== created.id) {
       state.actions.push({ type: "interrupt_current", taskId: created.id });
     }
     state.replyParts.push(`${item.disposition === "interrupt_now" ? "已立即插入" : "已安排到今天"}：${created.title}`);
     state.changed = true;
+    state.tasksCreated = true;
   }
+}
+
+async function replanCreatedTasks(state, deps) {
+  if (!state.tasksCreated || state.node === "08:00" || state.node === "24:00") return;
+  const options = {
+    date: state.workDate,
+    reason: `checkpoint_${state.node}`,
+    deliveryMode: "task_dm",
+  };
+  if (EVENING_NODES.has(state.node)) options.maxCriticalTasks = 1;
+  state.schedule = await deps.manager.replanDay(options);
 }
 
 async function runDailyDispatch(state, deps) {
@@ -114,7 +140,7 @@ async function runDailyDispatch(state, deps) {
 
 async function runMorningCalibration(state, deps) {
   if (!state.changed) return;
-  state.schedule = await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_09:00", deliveryMode: "task_dm" });
+  state.schedule ||= await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_09:00", deliveryMode: "task_dm" });
   state.replyParts.push("上午计划已合并调整。请按飞书任务中的最新顺序执行。");
 }
 
@@ -143,7 +169,7 @@ async function runAfternoonStartCheck(state, deps) {
 }
 
 async function runDayOutcomeCheck(state, deps) {
-  state.schedule = await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_18:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
+  state.schedule ||= await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_18:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
   state.schedule = keepOneCoreTask(state.schedule);
   if (state.schedule.blocks.length || state.changed) {
     state.replyParts.push("晚间只保留一个最接近交付的核心任务，其余不顺延堆积。");
@@ -152,7 +178,7 @@ async function runDayOutcomeCheck(state, deps) {
 }
 
 async function runFinalSprint(state, deps) {
-  state.schedule = await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_21:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
+  state.schedule ||= await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_21:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
   state.schedule = keepOneCoreTask(state.schedule);
   const active = activeForProgress(deps.tasks.listActive());
   const doing = deps.tasks.findDoing?.() || active.find((task) => task.status === "doing");

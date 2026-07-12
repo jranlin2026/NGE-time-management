@@ -6,7 +6,7 @@ export function createAcceptanceService(deps) {
   const fail = deps.failureInjector || (() => {});
   const now = () => deps.clock?.now?.().toISOString?.() || new Date().toISOString();
 
-  async function request(task, { idempotencyKey = "" } = {}) {
+  async function request(task, { idempotencyKey = "", suppressOutbox = false } = {}) {
     return transaction(() => {
       const transition = transitionTask({ task, action: "request_acceptance", at: now() });
       const saved = tasks.update(task.id, transition.patch);
@@ -15,7 +15,9 @@ export function createAcceptanceService(deps) {
         idempotencyKey: idempotencyKey || null,
       });
       ops.appendEvent({ taskId: task.id, kind: transition.event.kind, payload: { acceptanceId: acceptance?.id }, idempotencyKey: idempotencyKey || null });
-      ops.enqueueOutbox({ kind: "evidence_request_card", payload: { task: saved }, idempotencyKey: idempotencyKey ? `outbox:${idempotencyKey}` : `evidence-request:${task.id}` });
+      if (!suppressOutbox) {
+        ops.enqueueOutbox({ kind: "evidence_request_card", payload: { task: saved }, idempotencyKey: idempotencyKey ? `outbox:${idempotencyKey}` : `evidence-request:${task.id}` });
+      }
       return acceptance;
     });
   }

@@ -373,6 +373,7 @@ test("keeps interrupt_now only when original source text supports an allowed gro
       });
       assert.equal(result.analysisStatus, "complete");
       assert.equal(result.items[0].disposition, "interrupt_now");
+      assert.equal(result.items[0].groundedP0, true);
     });
   }
 });
@@ -392,6 +393,7 @@ test("downgrades interrupt_now when only generated output claims an allowed grou
 
   assert.equal(result.analysisStatus, "complete");
   assert.equal(result.items[0].disposition, "candidate_pool");
+  assert.equal(result.items[0].groundedP0, undefined);
 });
 
 test("rejects checkpoint objects whose minutes are outside 15 to 45", async (t) => {

@@ -21,11 +21,22 @@ test("resolves the greatest node not after local time", () => {
 });
 
 test("runs missed 08:00 before 09:00", () => {
-  assert.deepEqual(dueCheckpointNodes({ now: "2026-07-13T09:00:00+08:00", timezone: "Asia/Shanghai", completedNodes: [] }).nodes, ["08:00", "09:00"]);
+  assert.deepEqual(dueCheckpointNodes({ now: "2026-07-13T09:00:00+08:00", timezone: "Asia/Shanghai", completedNodes: [] }).nodes, ["24:00", "08:00", "09:00"]);
+});
+
+test("runs a missing previous review before a later recovery node", () => {
+  assert.deepEqual(dueCheckpointNodes({ now: "2026-07-13T18:00:00+08:00", timezone: "Asia/Shanghai", completedNodes: ["08:00"] }).nodes, ["24:00", "18:00"]);
+});
+
+test("date-qualified completion removes both recovery prerequisites", () => {
+  assert.deepEqual(dueCheckpointNodes({
+    now: "2026-07-13T15:00:00+08:00", timezone: "Asia/Shanghai",
+    completedNodes: ["2026-07-12:24:00", "2026-07-13:08:00"],
+  }).nodes, ["15:00"]);
 });
 
 test("collapses expired progress checks at 18:00", () => {
-  assert.deepEqual(dueCheckpointNodes({ now: "2026-07-13T18:00:00+08:00", timezone: "Asia/Shanghai", completedNodes: ["08:00"] }).nodes, ["18:00"]);
+  assert.deepEqual(dueCheckpointNodes({ now: "2026-07-13T18:00:00+08:00", timezone: "Asia/Shanghai", completedNodes: ["24:00", "08:00"] }).nodes, ["18:00"]);
 });
 
 test("runs an unfinished previous review before today's first dispatch", () => {
