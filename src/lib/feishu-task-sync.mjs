@@ -14,10 +14,30 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
     async pushSchedule({ date, schedule }) {
       const results = [];
       const remoteParents = await api.listTasklistTasks(config);
-      for (const block of schedule?.blocks || []) {
-        const localTask = tasks.findById(block.taskId);
+      const scheduleBlocks = schedule?.blocks || [];
+      const taskIds = [...new Set(scheduleBlocks.map((block) => block.taskId))];
+      const checkpointBlocks = new Map(
+        scheduleBlocks
+          .filter((block) => Number.isInteger(block.checkpointIndex))
+          .map((block) => [checkpointKey(block.taskId, block.checkpointIndex), block]),
+      );
+      for (const taskId of taskIds) {
+        const localTask = tasks.findById(taskId);
         if (!localTask) continue;
-        const parentFields = managedFields(localTask, -1, localTask.title, localTask.description, block.startsAt, block.endsAt, localTask.status === "done");
+        const intervals = (localTask.checkpoints || [])
+          .map((checkpoint, checkpointIndex) => checkpointInterval(localTask.id, checkpointIndex, checkpoint, checkpointBlocks))
+          .filter(Boolean);
+        const parentInterval = bounds(intervals)
+          || bounds(scheduleBlocks.filter((block) => block.taskId === localTask.id).map(validInterval).filter(Boolean));
+        const parentFields = managedFields(
+          localTask,
+          -1,
+          localTask.title,
+          parentDescription(localTask),
+          parentInterval?.startAt,
+          parentInterval?.dueAt,
+          localTask.status === "done",
+        );
         const parent = await ensureRemote({
           localTask,
           checkpointIndex: -1,
@@ -27,7 +47,16 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
         });
         const remoteChildren = await api.listSubtasks(config, parent.taskGuid);
         for (const [checkpointIndex, checkpoint] of (localTask.checkpoints || []).entries()) {
-          const childFields = managedFields(localTask, checkpointIndex, checkpoint.title, "", null, block.endsAt, checkpoint.completed);
+          const interval = checkpointInterval(localTask.id, checkpointIndex, checkpoint, checkpointBlocks);
+          const childFields = managedFields(
+            localTask,
+            checkpointIndex,
+            childSummary(checkpoint, interval, config.timezone),
+            childDescription(checkpoint),
+            interval?.startAt,
+            interval?.dueAt,
+            checkpoint.completed,
+          );
           await ensureRemote({
             localTask,
             checkpointIndex,
@@ -102,6 +131,82 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
     }
     return existing;
   }
+}
+
+function parentDescription(task) {
+  return [
+    task.project ? `项目：${task.project}` : "",
+    task.nextAction ? `第一步：${task.nextAction}` : "",
+    Number.isFinite(task.estimateMinutes) ? `预计投入：${task.estimateMinutes}分钟` : "",
+    task.doneDefinition ? `完成标准：${task.doneDefinition}` : "",
+    task.description || "",
+  ].filter(Boolean).join("\n");
+}
+
+function childDescription(checkpoint) {
+  return [
+    `预计：${checkpoint.minutes || 15}分钟`,
+    `完成标准：${checkpoint.doneDefinition || checkpoint.title}`,
+    checkpoint.feedback ? `反馈：${checkpoint.feedback}` : "完成后在飞书勾选本子任务。",
+  ].join("\n");
+}
+
+function childSummary(checkpoint, interval, timezone = "Asia/Shanghai") {
+  if (!interval) return checkpoint.title;
+  return `${localTime(interval.startAt, timezone)}–${localEndTime(interval, timezone)}｜${checkpoint.title}`;
+}
+
+function localTime(value, timezone) {
+  const parts = localParts(value, timezone);
+  return `${parts.hour}:${parts.minute}`;
+}
+
+function localEndTime(interval, timezone) {
+  const start = localParts(interval.startAt, timezone);
+  const end = localParts(interval.dueAt, timezone);
+  if (end.hour === "00" && end.minute === "00" && localDateKey(start) !== localDateKey(end)) return "24:00";
+  return `${end.hour}:${end.minute}`;
+}
+
+function localParts(value, timezone) {
+  return Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(value)).map((part) => [part.type, part.value]));
+}
+
+function localDateKey(parts) {
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function checkpointKey(taskId, checkpointIndex) {
+  return `${taskId}:${checkpointIndex}`;
+}
+
+function checkpointInterval(taskId, checkpointIndex, checkpoint, checkpointBlocks) {
+  return validInterval(checkpointBlocks.get(checkpointKey(taskId, checkpointIndex)))
+    || (checkpoint.completed ? validInterval(checkpoint) : null);
+}
+
+function validInterval(value) {
+  const startAt = value?.startsAt;
+  const dueAt = value?.endsAt;
+  const start = Date.parse(startAt);
+  const due = Date.parse(dueAt);
+  return Number.isFinite(start) && Number.isFinite(due) && due > start ? { startAt, dueAt, start, due } : null;
+}
+
+function bounds(intervals) {
+  if (!intervals.length) return null;
+  return {
+    startAt: intervals.reduce((first, interval) => interval.start < first.start ? interval : first).startAt,
+    dueAt: intervals.reduce((last, interval) => interval.due > last.due ? interval : last).dueAt,
+  };
 }
 
 function managedFields(localTask, checkpointIndex, summary, description, startAt, dueAt, completed) {

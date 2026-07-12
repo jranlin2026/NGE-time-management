@@ -39,12 +39,240 @@ function syncFixture({ checkpoints = [], links: linksOverride } = {}) {
   return { api, links, schedule, sync, task };
 }
 
+function detailedSyncFixture({ localTasks, schedule }) {
+  const taskById = new Map(localTasks.map((task) => [task.id, task]));
+  const storedLinks = new Map();
+  const remoteChildren = new Map();
+  const links = {
+    findFeishuLink(localTaskId, checkpointIndex) { return storedLinks.get(`${localTaskId}:${checkpointIndex}`) || null; },
+    upsertFeishuLink(link) { storedLinks.set(`${link.localTaskId}:${link.checkpointIndex}`, link); return link; },
+    listFeishuLinks(localTaskId) { return [...storedLinks.values()].filter((link) => link.localTaskId === localTaskId); },
+  };
+  const api = {
+    createdParents: [], createdChildren: [], updated: [], remoteParents: [],
+    async createTask(_config, body) {
+      this.createdParents.push(body);
+      const task = { guid: `parent-${this.createdParents.length}`, client_token: body.clientToken };
+      this.remoteParents.push(task);
+      return { data: { task } };
+    },
+    async createSubtask(_config, parentGuid, body) {
+      this.createdChildren.push({ parentGuid, ...body });
+      const children = remoteChildren.get(parentGuid) || [];
+      const task = { guid: `${parentGuid}-child-${children.length + 1}`, parent_guid: parentGuid, client_token: body.clientToken };
+      children.push(task);
+      remoteChildren.set(parentGuid, children);
+      return { data: { task } };
+    },
+    async updateTask(_config, guid, body) { this.updated.push({ guid, body }); },
+    async listTasklistTasks() { return this.remoteParents; },
+    async listSubtasks(_config, parentGuid) { return remoteChildren.get(parentGuid) || []; },
+  };
+  const sync = createFeishuTaskSynchronizer({
+    config: { feishuTasklistGuid: "list-1" },
+    tasks: { findById(id) { return taskById.get(id) || null; } },
+    links,
+    api,
+    scheduleForDate: () => schedule,
+  });
+  return { api, links, schedule, sync };
+}
+
+test("syncs each outcome once with detailed parent fields and its own timed checkpoint children", async () => {
+  const fixture = detailedSyncFixture({
+    localTasks: [
+      {
+        id: "task-ip",
+        title: "个人IP｜交付3条可剪辑原片",
+        project: "个人IP",
+        nextAction: "确定3个选题",
+        estimateMinutes: 105,
+        doneDefinition: "3条原片可剪辑",
+        status: "scheduled",
+        checkpoints: [
+          { title: "确定3个选题", minutes: 20, doneDefinition: "3个选题和钩子已确认", feedback: "附选题清单", completed: false },
+          { title: "完成脚本提纲", minutes: 40, doneDefinition: "3条提纲可直接口播", completed: false },
+          { title: "完成拍摄", minutes: 45, doneDefinition: "3条原片已交剪辑", completed: false },
+        ],
+      },
+      {
+        id: "task-os",
+        title: "极享OS｜完成线索模块验收",
+        project: "极享OS",
+        nextAction: "核对字段",
+        estimateMinutes: 45,
+        doneDefinition: "一名员工完成真实录入",
+        status: "scheduled",
+        checkpoints: [
+          { title: "核对字段", minutes: 45, doneDefinition: "字段和权限已确认", completed: false },
+        ],
+      },
+    ],
+    schedule: {
+      blocks: [
+        { taskId: "task-ip", checkpointIndex: 0, startsAt: "2026-07-13T02:15:00.000Z", endsAt: "2026-07-13T02:35:00.000Z" },
+        { taskId: "task-ip", checkpointIndex: 1, startsAt: "2026-07-13T02:35:00.000Z", endsAt: "2026-07-13T03:15:00.000Z" },
+        { taskId: "task-os", checkpointIndex: 0, startsAt: "2026-07-13T03:15:00.000Z", endsAt: "2026-07-13T04:00:00.000Z" },
+        { taskId: "task-ip", checkpointIndex: 2, startsAt: "2026-07-13T10:30:00.000Z", endsAt: "2026-07-13T11:15:00.000Z" },
+      ],
+    },
+  });
+
+  const first = await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
+  const countsAfterFirstPush = {
+    parents: fixture.api.createdParents.length,
+    children: fixture.api.createdChildren.length,
+    updates: fixture.api.updated.length,
+  };
+  const second = await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
+
+  assert.deepEqual(first.tasks.map((item) => item.localTaskId), ["task-ip", "task-os"]);
+  assert.deepEqual(second.tasks.map((item) => item.localTaskId), ["task-ip", "task-os"]);
+  assert.deepEqual(countsAfterFirstPush, { parents: 2, children: 4, updates: 0 });
+  assert.deepEqual({
+    parents: fixture.api.createdParents.length,
+    children: fixture.api.createdChildren.length,
+    updates: fixture.api.updated.length,
+  }, countsAfterFirstPush);
+
+  const ipParent = fixture.api.createdParents.find((item) => item.summary.startsWith("个人IP"));
+  assert.match(ipParent.description, /项目：个人IP/);
+  assert.match(ipParent.description, /第一步：确定3个选题/);
+  assert.match(ipParent.description, /预计投入：105分钟/);
+  assert.match(ipParent.description, /完成标准：3条原片可剪辑/);
+  assert.equal(ipParent.startAt, "2026-07-13T02:15:00.000Z");
+  assert.equal(ipParent.dueAt, "2026-07-13T11:15:00.000Z");
+
+  const ipChildren = fixture.api.createdChildren.filter((item) => item.parentGuid === "parent-1");
+  assert.deepEqual(ipChildren.map((item) => item.summary), [
+    "10:15–10:35｜确定3个选题",
+    "10:35–11:15｜完成脚本提纲",
+    "18:30–19:15｜完成拍摄",
+  ]);
+  assert.deepEqual(ipChildren.map((item) => [item.startAt, item.dueAt]), [
+    ["2026-07-13T02:15:00.000Z", "2026-07-13T02:35:00.000Z"],
+    ["2026-07-13T02:35:00.000Z", "2026-07-13T03:15:00.000Z"],
+    ["2026-07-13T10:30:00.000Z", "2026-07-13T11:15:00.000Z"],
+  ]);
+  assert.match(ipChildren[0].description, /预计：20分钟/);
+  assert.match(ipChildren[0].description, /完成标准：3个选题和钩子已确认/);
+  assert.match(ipChildren[0].description, /反馈：附选题清单/);
+
+  const osParent = fixture.api.createdParents.find((item) => item.summary.startsWith("极享OS"));
+  assert.equal(osParent.startAt, "2026-07-13T03:15:00.000Z");
+  assert.equal(osParent.dueAt, "2026-07-13T04:00:00.000Z");
+});
+
+test("keeps a completed checkpoint child on its stored explicit interval when it is absent from the remaining schedule", async () => {
+  const fixture = detailedSyncFixture({
+    localTasks: [{
+      id: "task-ip",
+      title: "个人IP｜交付3条可剪辑原片",
+      project: "个人IP",
+      nextAction: "继续完成脚本",
+      estimateMinutes: 60,
+      doneDefinition: "3条原片可剪辑",
+      status: "scheduled",
+      checkpoints: [
+        {
+          title: "确定3个选题",
+          minutes: 20,
+          startsAt: "2026-07-13T02:00:00.000Z",
+          endsAt: "2026-07-13T02:20:00.000Z",
+          doneDefinition: "3个选题已确认",
+          completed: true,
+        },
+        { title: "完成脚本", minutes: 40, doneDefinition: "脚本可直接口播", completed: false },
+      ],
+    }],
+    schedule: {
+      blocks: [
+        { taskId: "task-ip", checkpointIndex: 1, startsAt: "2026-07-13T02:30:00.000Z", endsAt: "2026-07-13T03:10:00.000Z" },
+      ],
+    },
+  });
+
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
+
+  assert.deepEqual(fixture.api.createdChildren.map((item) => [item.startAt, item.dueAt]), [
+    ["2026-07-13T02:00:00.000Z", "2026-07-13T02:20:00.000Z"],
+    ["2026-07-13T02:30:00.000Z", "2026-07-13T03:10:00.000Z"],
+  ]);
+  assert.ok(fixture.api.createdChildren[0].completedAt);
+  assert.equal(fixture.api.createdParents[0].startAt, "2026-07-13T02:00:00.000Z");
+  assert.equal(fixture.api.createdParents[0].dueAt, "2026-07-13T03:10:00.000Z");
+});
+
+test("does not reuse a stored future interval for an incomplete checkpoint absent from the schedule", async () => {
+  const fixture = detailedSyncFixture({
+    localTasks: [{
+      id: "task-ip",
+      title: "个人IP｜交付3条可剪辑原片",
+      project: "个人IP",
+      nextAction: "完成今日脚本",
+      estimateMinutes: 40,
+      doneDefinition: "今日脚本可直接口播",
+      status: "scheduled",
+      checkpoints: [
+        { title: "完成今日脚本", minutes: 40, doneDefinition: "脚本可直接口播", completed: false },
+        {
+          title: "准备明日选题",
+          minutes: 20,
+          startsAt: "2026-07-14T02:00:00.000Z",
+          endsAt: "2026-07-14T02:20:00.000Z",
+          doneDefinition: "明日选题已准备",
+          completed: false,
+        },
+      ],
+    }],
+    schedule: {
+      blocks: [
+        { taskId: "task-ip", checkpointIndex: 0, startsAt: "2026-07-13T02:30:00.000Z", endsAt: "2026-07-13T03:10:00.000Z" },
+      ],
+    },
+  });
+
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
+
+  assert.equal(fixture.api.createdChildren[1].startAt, undefined);
+  assert.equal(fixture.api.createdChildren[1].dueAt, undefined);
+  assert.equal(fixture.api.createdParents[0].dueAt, "2026-07-13T03:10:00.000Z");
+});
+
+test("renders a child ending at next-day midnight as 24:00", async () => {
+  const fixture = detailedSyncFixture({
+    localTasks: [{
+      id: "task-live",
+      title: "公域直播｜完成30单结果复盘",
+      project: "公域直播",
+      nextAction: "记录成交结果",
+      estimateMinutes: 30,
+      doneDefinition: "订单、差距和纠偏动作已记录",
+      status: "scheduled",
+      checkpoints: [{ title: "记录订单和差距", minutes: 30, doneDefinition: "复盘已记录", completed: false }],
+    }],
+    schedule: {
+      blocks: [{
+        taskId: "task-live",
+        checkpointIndex: 0,
+        startsAt: "2026-07-13T15:30:00.000Z",
+        endsAt: "2026-07-13T16:00:00.000Z",
+      }],
+    },
+  });
+
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
+
+  assert.equal(fixture.api.createdChildren[0].summary, "23:30–24:00｜记录订单和差距");
+});
+
 test("creates one child per local checkpoint exactly once", async () => {
   const fixture = syncFixture({ checkpoints: [{ title: "写脚本", completed: false }, { title: "拍摄", completed: false }] });
   await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
   await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
   assert.deepEqual(fixture.api.createdParents.map((item) => item.summary), ["完成口播视频"]);
   assert.deepEqual(fixture.api.createdChildren.map((item) => item.summary), ["写脚本", "拍摄"]);
+  assert.doesNotMatch(fixture.api.createdParents[0].description, /undefined|null/);
   assert.deepEqual(fixture.links.listFeishuLinks("task-1").map((link) => link.checkpointIndex).sort(), [-1, 0, 1]);
 });
 
