@@ -160,12 +160,37 @@ test("unforced 09 executes prior review, 08 prerequisite, and current node as se
   ]);
 });
 
-function runnerFixture({ messages = [], pollMessages, completedNodes = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, buildAnalysisContext, analyze, executionNow, onClaimLock } = {}) {
+test("pre-recorded pending messages remain isolated by each catch-up cutoff", async () => {
+  const analyzed = [];
+  const fixture = runnerFixture({
+    pendingMessages: [
+      messageAt("om-review", "昨晚收尾", "2026-07-12T15:50:00.000Z"),
+      messageAt("om-morning", "今早任务", "2026-07-12T23:00:00.000Z"),
+      messageAt("om-nine", "九点校准", "2026-07-13T00:30:00.000Z"),
+    ],
+    pollMessages: () => [],
+    analyze: async ({ node, messages }) => {
+      analyzed.push([node, messages.map((item) => item.messageId)]);
+      return { items: [] };
+    },
+  });
+  const result = await fixture.runner.run({ now: "2026-07-13T09:00:00+08:00" });
+  assert.deepEqual(analyzed, [
+    ["24:00", ["om-review"]],
+    ["08:00", ["om-morning"]],
+    ["09:00", ["om-nine"]],
+  ]);
+  assert.equal(result.messagesProcessed, 3);
+  assert.deepEqual(fixture.finalizedThrough, ["2026-07-12T16:00:00.000Z", "2026-07-13T00:00:00.000Z", "2026-07-13T01:00:00.000Z"]);
+});
+
+function runnerFixture({ messages = [], pendingMessages = [], pollMessages, completedNodes = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, buildAnalysisContext, analyze, executionNow, onClaimLock } = {}) {
   const calls = [];
   const claims = [];
   const polls = [];
   const outbox = [];
-  const pending = [];
+  const pending = [...pendingMessages];
+  const finalizedThrough = [];
   let cursor = null;
   const runtime = {
     claimLock: (input) => { calls.push("lock"); onClaimLock?.(input); return !lockHeld; },
@@ -175,9 +200,12 @@ function runnerFixture({ messages = [], pollMessages, completedNodes = [], syncE
     completeRun: () => { calls.push("complete"); },
     getMessageCursor: () => cursor ? { polledThrough: cursor } : null,
     recordInbound: (items) => { calls.push("record"); pending.push(...items.filter((item) => !pending.some((old) => old.messageId === item.messageId))); },
-    listPendingInbound: () => pending,
+    listPendingInbound: (_chatId, options = {}) => options.through
+      ? pending.filter((item) => item.createdAt <= options.through)
+      : pending,
     finalizeInbound: ({ messageIds, polledThrough, claimToken }) => {
       calls.push("finalize");
+      finalizedThrough.push(polledThrough);
       assert.equal(claimToken, "claim-1");
       pending.splice(0, pending.length, ...pending.filter((item) => !messageIds.includes(item.messageId)));
       cursor = polledThrough;
@@ -206,7 +234,7 @@ function runnerFixture({ messages = [], pollMessages, completedNodes = [], syncE
   };
   let runner = createCheckpointRunner(deps);
   return {
-    get runner() { return runner; }, runtime, calls, claims, polls, outbox, pending, get cursor() { return cursor; },
+    get runner() { return runner; }, runtime, calls, claims, polls, finalizedThrough, outbox, pending, get cursor() { return cursor; },
     setDelivery(overrides) { Object.assign(deps, overrides); runner = createCheckpointRunner(deps); },
   };
 }

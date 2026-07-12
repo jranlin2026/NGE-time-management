@@ -51,7 +51,7 @@ export function createCheckpointRunner(deps) {
           const inbound = polled.map((message) => normalizeInbound(message, chatId));
           summary.messagesRead += inbound.length;
           await deps.runtime.recordInbound(inbound);
-          const pending = await deps.runtime.listPendingInbound(chatId);
+          const pending = await deps.runtime.listPendingInbound(chatId, { through: pollThrough });
           const remoteProgress = await deps.taskSync.pullProgress({ date: workDate });
           const progress = await deps.policy.reconcileRemoteProgress({
             node, workDate, messages: pending, remoteProgress,

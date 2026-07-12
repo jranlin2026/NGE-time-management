@@ -40,6 +40,19 @@ test("does not process one inbound message twice", () => {
   db.close();
 });
 
+test("bounds pending inbound messages by the requested polling cutoff", () => {
+  const db = openDatabase(":memory:");
+  const repo = createAutomationRepository(db, { now: () => "2026-07-13T01:00:00.000Z" });
+  repo.recordInbound([
+    { messageId: "before", chatId: "oc-p2p", senderId: "owner", messageType: "text", content: { text: "a" }, createdAt: "2026-07-12T15:59:59.000Z" },
+    { messageId: "boundary", chatId: "oc-p2p", senderId: "owner", messageType: "text", content: { text: "b" }, createdAt: "2026-07-12T16:00:00.000Z" },
+    { messageId: "after", chatId: "oc-p2p", senderId: "owner", messageType: "text", content: { text: "c" }, createdAt: "2026-07-12T16:00:01.000Z" },
+  ]);
+  assert.deepEqual(repo.listPendingInbound("oc-p2p", { through: "2026-07-12T16:00:00.000Z" }).map((item) => item.messageId), ["before", "boundary"]);
+  assert.deepEqual(repo.listPendingInbound("oc-p2p").map((item) => item.messageId), ["before", "boundary", "after"]);
+  db.close();
+});
+
 test("maps parent and checkpoint GUIDs independently", () => {
   const { db, repo } = fixture();
   db.prepare(`INSERT INTO tasks (id,title,raw_input,next_action,done_definition,created_at,updated_at)

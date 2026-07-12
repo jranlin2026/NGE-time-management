@@ -30,11 +30,12 @@ Implemented the failure-safe one-shot checkpoint runner, owner-only merged priva
 - Normal runs acquire the global lock before querying completed nodes or resolving due execution work.
 - Completed-node lookup covers the current and previous local dates and returns date-qualified identities.
 - Catch-up nodes execute as dated references with independent cutoffs, so prior-day 24:00, current-day 08:00, and current 09:00 consume and finalize only their own polling intervals.
+- Pending inbound lookup accepts an inclusive `through` cutoff; each catch-up node analyzes and finalizes only its bounded pending batch even when later messages were recorded earlier.
 
 ## Verification
 
-- Focused due-node review suite: 37 passed, 0 failed.
-- Full suite: 316 passed, 0 failed.
+- Focused interval-isolation suite: 47 passed, 0 failed.
+- Full suite: 318 passed, 0 failed.
 - `git diff --check`: clean.
 
 ## Scope note

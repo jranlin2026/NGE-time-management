@@ -133,9 +133,10 @@ export function createAutomationRepository(db, deps = {}) {
       });
     },
 
-    listPendingInbound(chatId) {
-      return db.prepare(`SELECT * FROM inbound_messages WHERE chat_id=? AND processed_run_key IS NULL
-        ORDER BY created_at, message_id`).all(chatId).map(mapInbound);
+    listPendingInbound(chatId, { through } = {}) {
+      const cutoff = through ? " AND created_at <= ?" : "";
+      return db.prepare(`SELECT * FROM inbound_messages WHERE chat_id=? AND processed_run_key IS NULL${cutoff}
+        ORDER BY created_at, message_id`).all(...(through ? [chatId, through] : [chatId])).map(mapInbound);
     },
 
     getMessageCursor(chatId) {
