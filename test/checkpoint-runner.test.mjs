@@ -118,18 +118,62 @@ test("CLI JSON never exposes a bare bearer credential", () => {
   assert.match(result.stdout, /\[redacted\]/);
 });
 
-function runnerFixture({ messages = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, buildAnalysisContext, analyze, executionNow, onClaimLock } = {}) {
+test("unforced 09 locks before due lookup and does not repeat a completed prior review", async () => {
+  const fixture = runnerFixture({ completedNodes: ["2026-07-12:24:00"] });
+  const result = await fixture.runner.run({ now: "2026-07-13T09:00:00+08:00" });
+  assert.deepEqual(fixture.calls.slice(0, 2), ["lock", "completed"]);
+  assert.deepEqual(result.nodes, ["08:00", "09:00"]);
+  assert.deepEqual(fixture.claims.map(({ runKey, workDate }) => [runKey, workDate]), [
+    ["2026-07-13:08:00", "2026-07-13"],
+    ["2026-07-13:09:00", "2026-07-13"],
+  ]);
+  assert.deepEqual(fixture.polls.map((input) => input.endTime), ["2026-07-13T00:00:00.000Z", "2026-07-13T01:00:00.000Z"].map((value) => Date.parse(value) / 1000));
+});
+
+test("unforced 09 executes prior review, 08 prerequisite, and current node as separate intervals", async () => {
+  const source = [
+    messageAt("om-review", "昨晚收尾", "2026-07-12T15:50:00.000Z"),
+    messageAt("om-morning", "今早任务", "2026-07-12T23:00:00.000Z"),
+    messageAt("om-nine", "九点校准", "2026-07-13T00:30:00.000Z"),
+  ];
+  const analyzed = [];
+  const fixture = runnerFixture({
+    completedNodes: [],
+    pollMessages: ({ startTime, endTime }) => source.filter((item) => {
+      const seconds = Date.parse(item.createdAt) / 1000;
+      return seconds > (startTime ?? -Infinity) && seconds <= endTime;
+    }),
+    analyze: async ({ node, workDate, messages }) => {
+      analyzed.push({ node, workDate, ids: messages.map((item) => item.messageId) });
+      return { items: [] };
+    },
+  });
+  await fixture.runner.run({ now: "2026-07-13T09:00:00+08:00" });
+  assert.deepEqual(fixture.claims.map(({ runKey }) => runKey), ["2026-07-12:24:00", "2026-07-13:08:00", "2026-07-13:09:00"]);
+  assert.deepEqual(fixture.polls.map((input) => input.endTime), [
+    "2026-07-12T16:00:00.000Z", "2026-07-13T00:00:00.000Z", "2026-07-13T01:00:00.000Z",
+  ].map((value) => Date.parse(value) / 1000));
+  assert.deepEqual(analyzed, [
+    { node: "24:00", workDate: "2026-07-12", ids: ["om-review"] },
+    { node: "08:00", workDate: "2026-07-13", ids: ["om-morning"] },
+    { node: "09:00", workDate: "2026-07-13", ids: ["om-nine"] },
+  ]);
+});
+
+function runnerFixture({ messages = [], pollMessages, completedNodes = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, buildAnalysisContext, analyze, executionNow, onClaimLock } = {}) {
   const calls = [];
+  const claims = [];
+  const polls = [];
   const outbox = [];
   const pending = [];
   let cursor = null;
   const runtime = {
     claimLock: (input) => { calls.push("lock"); onClaimLock?.(input); return !lockHeld; },
     releaseLock: () => { calls.push("unlock"); },
-    claimRun: () => { calls.push("claim"); return { claimed: true, claimToken: "claim-1" }; },
+    claimRun: (input) => { calls.push("claim"); claims.push(input); return { claimed: true, claimToken: "claim-1" }; },
     failRun: () => { calls.push("fail"); },
     completeRun: () => { calls.push("complete"); },
-    getMessageCursor: () => cursor,
+    getMessageCursor: () => cursor ? { polledThrough: cursor } : null,
     recordInbound: (items) => { calls.push("record"); pending.push(...items.filter((item) => !pending.some((old) => old.messageId === item.messageId))); },
     listPendingInbound: () => pending,
     finalizeInbound: ({ messageIds, polledThrough, claimToken }) => {
@@ -143,7 +187,7 @@ function runnerFixture({ messages = [], syncError = null, healthyProgress = fals
     config: { timezone: "Asia/Shanghai", managerUserId, scheduleVersion: 2 },
     runtime,
     resolveChatId: async () => "oc-p2p",
-    pollMessages: async () => messages,
+    pollMessages: async (input) => { polls.push(input); return pollMessages ? pollMessages(input) : messages; },
     taskSync: {
       pullProgress: async () => ({ completedTasks: [], completedCheckpoints: healthyProgress ? [{ localTaskId: "done", checkpointIndex: 0 }] : [] }),
       pushSchedule: async () => { calls.push("push"); if (syncError) throw syncError; return { tasks: [] }; },
@@ -155,18 +199,22 @@ function runnerFixture({ messages = [], syncError = null, healthyProgress = fals
     },
     ops: { enqueueOutbox: (item) => { calls.push("enqueue"); outbox.push(item); return item; } },
     outboxWorker: { flush: async () => { calls.push("flush"); } },
-    getCompletedNodes: () => [],
+    getCompletedNodes: () => { calls.push("completed"); return completedNodes; },
     owner: () => "runner-1",
     clock: executionNow ? { now: () => executionNow } : undefined,
     buildAnalysisContext,
   };
   let runner = createCheckpointRunner(deps);
   return {
-    get runner() { return runner; }, runtime, calls, outbox, pending, get cursor() { return cursor; },
+    get runner() { return runner; }, runtime, calls, claims, polls, outbox, pending, get cursor() { return cursor; },
     setDelivery(overrides) { Object.assign(deps, overrides); runner = createCheckpointRunner(deps); },
   };
 }
 
 function message(messageId, text) {
   return { messageId, chatId: "oc-p2p", senderId: "ou-owner", messageType: "text", content: { text }, createdAt: "2026-07-13T00:30:00.000Z" };
+}
+
+function messageAt(messageId, text, createdAt) {
+  return { ...message(messageId, text), createdAt };
 }

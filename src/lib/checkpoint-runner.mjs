@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { dueCheckpointNodes, resolveCheckpointContext } from "./checkpoint-schedule.mjs";
 import { sanitizeError } from "./sanitize-error.mjs";
+import { zonedDateTimeToUtc } from "./schedule-engine.mjs";
 
 const FIVE_MINUTES = 5 * 60_000;
 
@@ -13,12 +14,12 @@ export function createCheckpointRunner(deps) {
       if (Number.isNaN(instant.getTime())) throw new Error("valid checkpoint time is required");
       const timezone = deps.config?.timezone || "Asia/Shanghai";
       const context = resolveCheckpointContext({ now: instant, timezone });
-      const completedNodes = await deps.getCompletedNodes?.(context.workDate) || [];
-      const nodes = forcedNode
-        ? [validateNode(forcedNode)]
-        : dueCheckpointNodes({ now: instant, timezone, completedNodes }).nodes;
-      const summary = emptySummary(context.workDate, nodes, dryRun ? "dry_run" : "completed");
-      if (dryRun) return summary;
+      if (dryRun) {
+        const nodes = forcedNode
+          ? [validateNode(forcedNode)]
+          : dueCheckpointNodes({ now: instant, timezone, completedNodes: [] }).nodes;
+        return emptySummary(context.workDate, nodes, "dry_run");
+      }
 
       const owner = deps.owner?.() || randomUUID();
       const executionNow = new Date(deps.clock?.now?.() || new Date());
@@ -26,11 +27,18 @@ export function createCheckpointRunner(deps) {
       if (!await deps.runtime.claimLock({ owner, expiresAt })) return { status: "skipped", reason: "lock_held" };
 
       let activeRun = null;
+      let summary = emptySummary(context.workDate, [], "completed");
       try {
+        const completedNodes = await deps.getCompletedNodes?.(context.workDate) || [];
+        const refs = forcedNode
+          ? [{ node: validateNode(forcedNode), workDate: context.workDate, pollThrough: instant.toISOString() }]
+          : executionRefs({ instant, timezone, context, completedNodes });
+        summary = emptySummary(context.workDate, refs.map((ref) => ref.node), "completed");
         const chatId = await deps.resolveChatId();
-        for (const node of nodes) {
-          const runKey = `${context.workDate}:${node}`;
-          const claim = await deps.runtime.claimRun({ runKey, workDate: context.workDate, node, expiresAt });
+        for (const ref of refs) {
+          const { node, workDate, pollThrough } = ref;
+          const runKey = `${workDate}:${node}`;
+          const claim = await deps.runtime.claimRun({ runKey, workDate, node, expiresAt });
           if (!claim.claimed) continue;
           activeRun = { runKey, claimToken: claim.claimToken };
 
@@ -38,29 +46,29 @@ export function createCheckpointRunner(deps) {
           const polled = await deps.pollMessages({
             chatId,
             startTime: toEpochSeconds(cursor?.polledThrough),
-            endTime: toEpochSeconds(instant.toISOString()),
+            endTime: toEpochSeconds(pollThrough),
           });
           const inbound = polled.map((message) => normalizeInbound(message, chatId));
           summary.messagesRead += inbound.length;
           await deps.runtime.recordInbound(inbound);
           const pending = await deps.runtime.listPendingInbound(chatId);
-          const remoteProgress = await deps.taskSync.pullProgress({ date: context.workDate });
+          const remoteProgress = await deps.taskSync.pullProgress({ date: workDate });
           const progress = await deps.policy.reconcileRemoteProgress({
-            node, workDate: context.workDate, messages: pending, remoteProgress,
+            node, workDate, messages: pending, remoteProgress,
           });
           const analysisContext = await deps.buildAnalysisContext?.({
-            node, workDate: context.workDate, messages: pending, remoteProgress,
+            node, workDate, messages: pending, remoteProgress,
           }) || {};
           const analysis = await deps.analyzer.analyzeCheckpointMessages({
-            node, workDate: context.workDate, messages: pending, context: { ...analysisContext, remoteProgress },
+            node, workDate, messages: pending, context: { ...analysisContext, remoteProgress },
           });
           const result = await deps.policy.apply({
-            node, workDate: context.workDate, messages: pending, analysis, remoteProgress,
+            node, workDate, messages: pending, analysis, remoteProgress,
             remoteProgressApplied: true,
             prelude: progress,
           });
           const schedule = result.schedule || { blocks: [] };
-          await deps.taskSync.pushSchedule({ date: context.workDate, schedule });
+          await deps.taskSync.pushSchedule({ date: workDate, schedule });
 
           if (result.replyRequired && result.reply) {
             if (!deps.config.managerUserId) throw new Error("private checkpoint summary requires owner open_id");
@@ -72,7 +80,7 @@ export function createCheckpointRunner(deps) {
                 receiveId: deps.config.managerUserId,
                 receiveIdType: "open_id",
               },
-              idempotencyKey: `private-summary:${context.workDate}:${node}:${scheduleVersion}:${messageDigest(pending)}`,
+              idempotencyKey: `private-summary:${workDate}:${node}:${scheduleVersion}:${messageDigest(pending)}`,
             });
             summary.repliesQueued += 1;
           }
@@ -82,7 +90,7 @@ export function createCheckpointRunner(deps) {
             messageIds: pending.map((message) => message.messageId),
             runKey,
             claimToken: claim.claimToken,
-            polledThrough: instant.toISOString(),
+            polledThrough: pollThrough,
           });
           summary.messagesProcessed += pending.length;
           summary.tasksCreated += countActions(result.actions, "task_created");
@@ -101,6 +109,25 @@ export function createCheckpointRunner(deps) {
       }
     },
   };
+}
+
+function executionRefs({ instant, timezone, context, completedNodes }) {
+  const due = dueCheckpointNodes({ now: instant, timezone, completedNodes }).nodes;
+  const previousDate = addDays(context.workDate, -1);
+  return due.map((node) => {
+    const priorReview = node === "24:00" && context.currentNode !== "24:00";
+    const workDate = priorReview ? previousDate : context.workDate;
+    const prerequisite = node !== context.currentNode;
+    const pollThrough = prerequisite
+      ? zonedDateTimeToUtc(workDate, node, timezone).toISOString()
+      : instant.toISOString();
+    return { node, workDate, pollThrough };
+  });
+}
+
+function addDays(date, amount) {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + amount)).toISOString().slice(0, 10);
 }
 
 function requireDependencies(deps) {

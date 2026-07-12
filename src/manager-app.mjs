@@ -251,7 +251,12 @@ export function createManagerRuntime(config, deps = {}) {
       activeTasks: state.tasks.listActive(),
       schedule: { date: workDate, blocks: state.ops.currentSchedule(workDate) },
     }),
-    getCompletedNodes: (workDate) => state.db.prepare("SELECT node FROM automation_runs WHERE work_date=? AND status='completed'").all(workDate).map((row) => row.node),
+    getCompletedNodes: (workDate) => {
+      const previousDate = addDays(workDate, -1);
+      return state.db.prepare("SELECT work_date, node FROM automation_runs WHERE work_date IN (?,?) AND status='completed'")
+        .all(previousDate, workDate)
+        .map((row) => `${row.work_date}:${row.node}`);
+    },
   });
   return { ...state, automation, taskSync, policy, checkpointRunner, close: () => app.stop() };
 }

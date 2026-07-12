@@ -27,11 +27,14 @@ Implemented the failure-safe one-shot checkpoint runner, owner-only merged priva
 - CLI dry-run branches before manager runtime/database creation and performs only direct-chat history diagnostics using the configured P2P chat id.
 - Runner, CLI, and outbox share credential sanitization covering bare Bearer credentials and named secret forms.
 - Lock and run leases derive from the execution clock; logical `--now` remains limited to checkpoint selection and polling bounds.
+- Normal runs acquire the global lock before querying completed nodes or resolving due execution work.
+- Completed-node lookup covers the current and previous local dates and returns date-qualified identities.
+- Catch-up nodes execute as dated references with independent cutoffs, so prior-day 24:00, current-day 08:00, and current 09:00 consume and finalize only their own polling intervals.
 
 ## Verification
 
-- Focused review suite: 27 passed, 0 failed.
-- Full suite: 314 passed, 0 failed.
+- Focused due-node review suite: 37 passed, 0 failed.
+- Full suite: 316 passed, 0 failed.
 - `git diff --check`: clean.
 
 ## Scope note
