@@ -91,22 +91,26 @@ export function createManagerService(deps) {
 
     const resolution = resolveTask(input);
     if (resolution.matches?.length > 1) {
-      ops.enqueueOutbox({
-        kind: "disambiguation_card",
-        payload: {
-          action: input.action,
-          tasks: resolution.matches.map((task) => ({ id: task.id, title: task.title })),
-        },
-        idempotencyKey: input.idempotencyKey ? `outbox:${input.idempotencyKey}` : `disambiguation:${Date.now()}`,
-      });
+      if (!input.suppressOutbox) {
+        ops.enqueueOutbox({
+          kind: "disambiguation_card",
+          payload: {
+            action: input.action,
+            tasks: resolution.matches.map((task) => ({ id: task.id, title: task.title })),
+          },
+          idempotencyKey: input.idempotencyKey ? `outbox:${input.idempotencyKey}` : `disambiguation:${Date.now()}`,
+        });
+      }
       return { action: "disambiguation", matches: resolution.matches };
     }
     if (!resolution.task) {
-      ops.enqueueOutbox({
-        kind: "status_message",
-        payload: { text: `没有找到对应任务：${input.query || input.taskId || "未指定"}` },
-        idempotencyKey: input.idempotencyKey ? `outbox:${input.idempotencyKey}` : `not-found:${Date.now()}`,
-      });
+      if (!input.suppressOutbox) {
+        ops.enqueueOutbox({
+          kind: "status_message",
+          payload: { text: `没有找到对应任务：${input.query || input.taskId || "未指定"}` },
+          idempotencyKey: input.idempotencyKey ? `outbox:${input.idempotencyKey}` : `not-found:${Date.now()}`,
+        });
+      }
       return { action: "not_found" };
     }
 

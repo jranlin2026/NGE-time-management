@@ -256,6 +256,54 @@ test("asks for disambiguation when a text title matches two tasks", async () => 
   db.close();
 });
 
+test("silent action does not enqueue a disambiguation card for an ambiguous task", async () => {
+  const { db, tasks, ops, manager } = setup();
+  tasks.create({ id: "silent-a", title: "拍视频第一批", rawInput: "拍视频第一批", status: "ready" });
+  tasks.create({ id: "silent-b", title: "拍视频第二批", rawInput: "拍视频第二批", status: "ready" });
+
+  const result = await manager.handleAction({
+    action: "complete",
+    query: "拍视频",
+    idempotencyKey: "message:silent-ambiguous",
+    suppressOutbox: true,
+  });
+
+  assert.equal(result.action, "disambiguation");
+  assert.equal(result.matches.length, 2);
+  assert.equal(ops.listOutbox().some((row) => row.kind === "disambiguation_card"), false);
+  db.close();
+});
+
+test("not-found action gives visible feedback in normal mode", async () => {
+  const { db, ops, manager } = setup();
+
+  const result = await manager.handleAction({
+    action: "complete",
+    taskId: "missing-task",
+    idempotencyKey: "message:missing-normal",
+  });
+
+  assert.equal(result.action, "not_found");
+  assert.equal(ops.listOutbox().at(-1).kind, "status_message");
+  assert.match(ops.listOutbox().at(-1).payload.text, /missing-task/);
+  db.close();
+});
+
+test("silent action does not enqueue a status message for a missing task", async () => {
+  const { db, ops, manager } = setup();
+
+  const result = await manager.handleAction({
+    action: "complete",
+    taskId: "silent-missing-task",
+    idempotencyKey: "message:missing-silent",
+    suppressOutbox: true,
+  });
+
+  assert.equal(result.action, "not_found");
+  assert.equal(ops.listOutbox().some((row) => row.kind === "status_message"), false);
+  db.close();
+});
+
 test("blocks proactively without counting procrastination and creates minimum action", async () => {
   const { db, tasks, ops, manager } = setup();
   tasks.create({ id: "task-3", title: "写口播", rawInput: "写口播", status: "doing", procrastinationCount: 0 });
