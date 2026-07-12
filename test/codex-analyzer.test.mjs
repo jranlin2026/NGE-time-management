@@ -598,3 +598,34 @@ test("checkpoint concreteness requires an action plus bounded quantity or observ
     });
   }
 });
+
+test("multi-person P0 requires explicit source blockage, not ordinary experience impact", async () => {
+  const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+    items: [checkpointItem({ disposition: "interrupt_now", category: "blocker", urgency: "high" })],
+    combinedReplyContext: "立即处理中断",
+  }) });
+  const result = await analyzer.analyzeCheckpointMessages({
+    node: "09:00", workDate: "2026-07-13",
+    messages: [{ messageId: "om-safe", content: { text: "这个问题影响销售和研发的使用体验" } }], context: {},
+  });
+
+  assert.equal(result.items[0].disposition, "candidate_pool");
+  assert.doesNotMatch(result.combinedReplyContext, /立即|中断/);
+});
+
+test("keeps explicitly grounded multi-person blockage interrupts", async (t) => {
+  for (const text of ["这个故障阻塞了销售和研发团队", "销售和研发现在都停下，无法继续工作"]) {
+    await t.test(text, async () => {
+      const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+        items: [checkpointItem({ disposition: "interrupt_now", category: "blocker", urgency: "high" })],
+        combinedReplyContext: "经验证需要紧急处理",
+      }) });
+      const result = await analyzer.analyzeCheckpointMessages({
+        node: "09:00", workDate: "2026-07-13",
+        messages: [{ messageId: "om-safe", content: { text } }], context: {},
+      });
+      assert.equal(result.analysisStatus, "complete");
+      assert.equal(result.items[0].disposition, "interrupt_now");
+    });
+  }
+});

@@ -296,7 +296,8 @@ function isConcreteCheckpointTitle(title) {
 }
 
 function sourceSupportsInterrupt(item, messagesById, workDate) {
-  const sourceText = item.messageIds.map((id) => originalMessageText(messagesById.get(id))).join("\n");
+  const sourceTexts = item.messageIds.map((id) => originalMessageText(messagesById.get(id)));
+  const sourceText = sourceTexts.join("\n");
   if (hasNegatedP0Language(sourceText)) return false;
   const unusableJixiangBug = item.category === "system_bug"
     && item.projectId === "jixiang-os"
@@ -316,8 +317,11 @@ function sourceSupportsInterrupt(item, messagesById, workDate) {
     && modelDeadline === parsedSourceDeadline
     && /(?:必须.{0,10}(?:我|老板|负责人|本人).{0,10}(?:本人|亲自|处理)|只能.{0,10}(?:我|老板|负责人|本人))/u.test(sourceText)
     && /(?:截止|deadline|到期)/iu.test(sourceText);
-  const multiPersonBlocker = item.category === "blocker"
-    && /(?:阻塞|卡住|影响).{0,40}(?:多人|多个(?:人|部门|团队)|至少[二两2]个?人|[、和与].*(?:人|部门|团队))/u.test(sourceText);
+  const multiPersonBlocker = item.category === "blocker" && sourceTexts.some((text) => {
+    const explicitBlockage = /(?:阻塞|卡住|无法继续|不能继续|都停下|全部停工)/u.test(text);
+    const multiplePeople = /(?:多人|多个(?:人|部门|团队)|至少[二两2]个?人|[二两三23]个?人|各(?:部门|团队)|(?:销售|产品|研发|运营|客服).{0,20}[、和与].{0,20}(?:销售|产品|研发|运营|客服))/u.test(text);
+    return explicitBlockage && multiplePeople;
+  });
   return unusableJixiangBug || currentBusinessLoss || ownerOnlyDeadline || multiPersonBlocker;
 }
 
