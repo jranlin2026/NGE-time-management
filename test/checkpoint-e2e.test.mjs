@@ -8,15 +8,21 @@ import { createManagerRuntime } from "../src/manager-app.mjs";
 test("one day flows from merged DMs through subtasks and review", async (t) => {
   const day = e2eFixture();
   t.after(() => day.close());
+  day.seedConfirmedDailyTask();
+  const doingBefore = day.tasks.findById("task-video");
+  const scheduleBefore = scheduleShape(day.ops.currentSchedule("2026-07-13"));
   day.feishu.addDirectMessages([
     message("om-1", "想到一个选题：老板为什么要学Codex", "2026-07-13T00:10:00.000Z"),
     message("om-2", "用我们买CRM花一万元的经历", "2026-07-13T00:20:00.000Z"),
   ]);
   await day.runner.run({ now: "2026-07-13T09:00:00+08:00" });
   assert.equal(day.feishu.privateReplies.length, 1);
-  assert.equal(day.feishu.parentTasks.length, 0);
+  assert.equal(day.tasks.findById("task-video").status, doingBefore.status);
+  assert.deepEqual(scheduleShape(day.ops.currentSchedule("2026-07-13")), scheduleBefore);
+  assert.equal(day.tasks.listAll().length, 1);
+  assert.equal(day.events.some((event) => event.kind === "interrupt_current"), false);
+  assert.equal(day.feishu.parentTasks.some((task) => task.summary.includes("老板为什么要学 Codex：一万元 CRM 经历")), false);
 
-  day.seedConfirmedDailyTask();
   await day.runner.run({ now: "2026-07-13T12:00:00+08:00" });
   assert.equal(day.feishu.parentTasks.length, 1);
   assert.equal(day.feishu.subtasks.length, 3);
@@ -26,7 +32,7 @@ test("one day flows from merged DMs through subtasks and review", async (t) => {
   assert.equal(day.tasks.findById("task-video").checkpoints[0].completed, true);
   assert.match(day.events.find((event) => event.kind === "checkpoint_completed").idempotencyKey, /^feishu-checkpoint:child-/);
 
-  await day.runner.run({ now: "2026-07-13T15:00:00+08:00" });
+  await day.runner.run({ now: "2026-07-13T18:00:00+08:00" });
   assert.equal(day.events.filter((event) => event.kind === "checkpoint_completed").length, 1);
 
   day.feishu.completeParent("2026-07-13T13:00:00.000Z");
@@ -136,7 +142,7 @@ function e2eFixture() {
         ],
       });
       runtime.ops.replaceSchedule({ date: "2026-07-13", blocks: [{
-        taskId: "task-video", startsAt: "2026-07-13T02:00:00.000Z", endsAt: "2026-07-13T03:30:00.000Z", reason: "confirmed_daily_task",
+        taskId: "task-video", startsAt: "2026-07-13T02:00:00.000Z", endsAt: "2026-07-13T03:30:00.000Z", status: "doing", reason: "confirmed_daily_task",
       }] });
     },
     close() { runtime.db.close(); fs.rmSync(directory, { recursive: true, force: true }); },
@@ -145,4 +151,8 @@ function e2eFixture() {
 
 function message(messageId, text, createdAt) {
   return { messageId, chatId: "oc-p2p", senderId: "ou-owner", messageType: "text", content: { text }, createdAt };
+}
+
+function scheduleShape(blocks) {
+  return blocks.map(({ taskId, startsAt, endsAt, status }) => ({ taskId, startsAt, endsAt, status }));
 }

@@ -41,3 +41,10 @@ Complete. The automated real-boundary-fake E2E passes. Live Feishu polling remai
 ## Remaining Concern
 
 Production Feishu credentials, live DM history pagination, controller merge, restart, and private-chat verification were intentionally not exercised. They remain the documented live acceptance step.
+
+## Review Follow-up
+
+- Replaced the same-run 15:00 retry with a genuinely later 18:00 checkpoint pull while the remote child remains completed; the durable event count remains exactly one.
+- Seeded the current `doing` task and its `doing` schedule block before the 09:00 candidate DMs.
+- Asserted candidate processing preserves the task status and schedule shape, creates no local candidate task, emits no interrupt event, and never creates a Feishu parent for the candidate title.
+- The stronger E2E required no production correction; only the fixture's initial block status was aligned with its already-doing task.
