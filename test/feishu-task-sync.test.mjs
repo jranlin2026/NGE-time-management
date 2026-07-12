@@ -56,7 +56,7 @@ test("pulls one child completion without completing its parent or mutating local
 
   const result = await fixture.sync.pullProgress({ date: "2026-07-13" });
 
-  assert.deepEqual(result.completedCheckpoints, [{ localTaskId: "task-1", checkpointIndex: 0, completedAt: "2026-07-13T02:00:00.000Z" }]);
+  assert.deepEqual(result.completedCheckpoints, [{ localTaskId: "task-1", checkpointIndex: 0, taskGuid: "child-0", completedAt: "2026-07-13T02:00:00.000Z" }]);
   assert.deepEqual(result.completedTasks, []);
   assert.equal(fixture.task.checkpoints[0].completed, false);
 });
@@ -131,5 +131,5 @@ test("pulls progress only for task ids in the requested date schedule", async ()
   });
 
   const result = await sync.pullProgress({ date: "2026-07-13" });
-  assert.deepEqual(result.completedTasks, [{ localTaskId: "task-13", completedAt: "2026-07-13T02:00:00.000Z" }]);
+  assert.deepEqual(result.completedTasks, [{ localTaskId: "task-13", taskGuid: "parent-13", completedAt: "2026-07-13T02:00:00.000Z" }]);
 });

@@ -229,6 +229,7 @@ export function createManagerRuntime(config, deps = {}) {
     config,
     tasks: state.tasks,
     links: automation,
+    api: deps.feishuTaskApi,
     scheduleForDate: (date) => ({ date, blocks: state.ops.currentSchedule(date) }),
   });
   const policy = deps.policy || createCheckpointPolicy({
@@ -239,8 +240,8 @@ export function createManagerRuntime(config, deps = {}) {
   const checkpointRunner = createCheckpointRunner({
     config,
     runtime: automation,
-    resolveChatId: () => resolveDirectChatId(config, state.ops),
-    pollMessages: (input) => listConversationMessages(config, input),
+    resolveChatId: deps.resolveChatId || (() => resolveDirectChatId(config, state.ops)),
+    pollMessages: deps.pollMessages || ((input) => listConversationMessages(config, input)),
     taskSync,
     analyzer: state.manager ? (deps.analyzer || createCodexAnalyzer(config)) : deps.analyzer,
     policy,

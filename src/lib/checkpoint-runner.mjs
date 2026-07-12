@@ -67,7 +67,7 @@ export function createCheckpointRunner(deps) {
             remoteProgressApplied: true,
             prelude: progress,
           });
-          const schedule = result.schedule || { blocks: [] };
+          const schedule = result.schedule || analysisContext.schedule || { blocks: [] };
           await deps.taskSync.pushSchedule({ date: workDate, schedule });
 
           if (result.replyRequired && result.reply) {

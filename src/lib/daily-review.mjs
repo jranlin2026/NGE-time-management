@@ -19,12 +19,19 @@ export function buildDailyReview({ date, tasks, schedule, events }) {
       .map((event) => event.payload?.reason)
       .filter(Boolean),
   )];
+  const subtasks = tasks.flatMap((task) => task.checkpoints || []);
 
   return {
     date,
     criticalPlanned,
     criticalCompleted,
     completionRate: criticalPlanned ? Math.round((criticalCompleted / criticalPlanned) * 100) : 0,
+    taskProgress: {
+      mainCompleted: tasks.filter((task) => task.status === "done").length,
+      mainTotal: tasks.length,
+      subtasksCompleted: subtasks.filter((item) => item.completed).length,
+      subtasksTotal: subtasks.length,
+    },
     procrastinationCount: events.filter((event) => event.kind === "procrastination_recorded").length,
     blockedCount: events.filter((event) => event.kind === "task_blocked").length,
     deferredTitles,
@@ -36,10 +43,12 @@ export function buildDailyReview({ date, tasks, schedule, events }) {
 
 export function renderDailyReview(summary) {
   const lines = [
-    `# ${summary.date} 晚间复盘`,
+    `# ${summary.date} 今日复盘`,
     "",
     `今日完成度：${summary.completionRate}%`,
     `完成 ${summary.criticalCompleted}/${summary.criticalPlanned} 个关键任务。`,
+    `完成主任务：${summary.taskProgress.mainCompleted}/${summary.taskProgress.mainTotal}`,
+    `完成子任务：${summary.taskProgress.subtasksCompleted}/${summary.taskProgress.subtasksTotal}`,
     `拖延：${summary.procrastinationCount} 次。`,
     `卡住：${summary.blockedCount} 次。`,
     "",

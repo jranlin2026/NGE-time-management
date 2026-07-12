@@ -57,7 +57,7 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
         const remoteParent = parentsByGuid.get(parentLink.taskGuid);
         const parentCompletedAt = completedAt(remoteParent);
         if (parentCompletedAt && localTask.status !== "done") {
-          completedTasks.push({ localTaskId: localTask.id, completedAt: parentCompletedAt });
+          completedTasks.push({ localTaskId: localTask.id, taskGuid: parentLink.taskGuid, completedAt: parentCompletedAt });
         }
         const remoteChildren = await api.listSubtasks(config, parentLink.taskGuid);
         const childrenByGuid = new Map(remoteChildren.map((task) => [task.guid, task]));
@@ -65,7 +65,7 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
           if (link.checkpointIndex < 0) continue;
           const timestamp = completedAt(childrenByGuid.get(link.taskGuid));
           if (!timestamp || localTask.checkpoints?.[link.checkpointIndex]?.completed) continue;
-          completedCheckpoints.push({ localTaskId: localTask.id, checkpointIndex: link.checkpointIndex, completedAt: timestamp });
+          completedCheckpoints.push({ localTaskId: localTask.id, checkpointIndex: link.checkpointIndex, taskGuid: link.taskGuid, completedAt: timestamp });
         }
       }
       return { date, completedTasks, completedCheckpoints };

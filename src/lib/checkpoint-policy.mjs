@@ -64,7 +64,7 @@ async function applyRemoteProgress(state, deps) {
       action: "complete_checkpoint",
       taskId: change.localTaskId,
       checkpointIndex: change.checkpointIndex,
-      idempotencyKey: `feishu-checkpoint:${change.localTaskId}:${change.checkpointIndex}:${change.completedAt}`,
+      idempotencyKey: `feishu-checkpoint:${change.taskGuid || `${change.localTaskId}:${change.checkpointIndex}`}:${change.completedAt}`,
       deliveryMode: "task_dm",
       suppressOutbox: true,
     });
@@ -76,7 +76,7 @@ async function applyRemoteProgress(state, deps) {
     const result = await deps.manager.handleAction({
       action: "complete",
       taskId: change.localTaskId,
-      idempotencyKey: `feishu-parent:${change.localTaskId}:${change.completedAt}`,
+      idempotencyKey: `feishu-parent:${change.taskGuid || change.localTaskId}:${change.completedAt}`,
       deliveryMode: "task_dm",
       suppressOutbox: true,
     });

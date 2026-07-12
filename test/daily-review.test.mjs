@@ -8,9 +8,9 @@ import { exportDay } from "../src/lib/markdown-export.mjs";
 
 test("builds a factual review from tasks, schedule, and events", async () => {
   const tasks = [
-    { id: "a", title: "拍 3 条口播", status: "done" },
-    { id: "b", title: "极享 OS 核心优化", status: "done" },
-    { id: "c", title: "极享 OS 测试收尾", status: "deferred" },
+    { id: "a", title: "拍 3 条口播", status: "done", checkpoints: [{ title: "写稿", minutes: 30, completed: true }] },
+    { id: "b", title: "极享 OS 核心优化", status: "done", checkpoints: [{ title: "修复", minutes: 45, completed: true }] },
+    { id: "c", title: "极享 OS 测试收尾", status: "deferred", checkpoints: [{ title: "回归", minutes: 30, completed: false }] },
   ];
   const schedule = { blocks: tasks.map((task) => ({ taskId: task.id })) };
   const events = [
@@ -24,6 +24,7 @@ test("builds a factual review from tasks, schedule, and events", async () => {
     criticalPlanned: 3,
     criticalCompleted: 2,
     completionRate: 67,
+    taskProgress: { mainCompleted: 2, mainTotal: 3, subtasksCompleted: 2, subtasksTotal: 3 },
     procrastinationCount: 1,
     blockedCount: 0,
     deferredTitles: ["极享 OS 测试收尾"],
@@ -32,6 +33,8 @@ test("builds a factual review from tasks, schedule, and events", async () => {
     recommendation: "明天先继续最高优先级的未完成任务；开始前只看下一步动作，不重新整理全部计划。",
   });
   assert.match(renderDailyReview(summary), /完成 2\/3 个关键任务/);
+  assert.match(renderDailyReview(summary), /完成主任务：2\/3/);
+  assert.match(renderDailyReview(summary), /完成子任务：2\/3/);
   assert.match(renderDailyReview(summary), /no_response_2/);
 
   const exportDir = await fs.mkdtemp(path.join(os.tmpdir(), "time-manager-export-"));
