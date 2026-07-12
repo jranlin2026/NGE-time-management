@@ -10,6 +10,7 @@ const MINIMUM_ACTION_SCHEMA = fileURLToPath(
 );
 const WEEKLY_PLAN_SCHEMA = fileURLToPath(new URL("./codex-weekly-plan-schema.json", import.meta.url));
 const ACCEPTANCE_SCHEMA = fileURLToPath(new URL("./codex-acceptance-schema.json", import.meta.url));
+const CHECKPOINT_SCHEMA = fileURLToPath(new URL("./codex-checkpoint-schema.json", import.meta.url));
 
 const QUADRANTS = new Set(["重要且紧急", "重要不紧急", "不重要但紧急", "不重要不紧急"]);
 const IMPORTANCE = new Set(["S", "A", "B", "C"]);
@@ -88,6 +89,21 @@ export function createCodexAnalyzer(config = {}, deps = {}) {
         return { ...parsed, analysisStatus: "complete" };
       } catch (error) {
         return fallbackWeeklyPlan({ weekId, projects, error });
+      }
+    },
+
+    async analyzeCheckpointMessages({ node, workDate, messages = [], context = {} }) {
+      try {
+        const text = await run({
+          mode: "checkpoint_messages",
+          schemaPath: CHECKPOINT_SCHEMA,
+          prompt: buildCheckpointPrompt({ node, workDate, messages, context }),
+        });
+        const parsed = JSON.parse(text);
+        validateCheckpointAnalysis(parsed, messages);
+        return { ...parsed, analysisStatus: "complete" };
+      } catch (error) {
+        return fallbackCheckpointAnalysis(messages, error);
       }
     },
   };
@@ -205,6 +221,97 @@ function buildWeeklyPrompt({ weekId, projects, previousPlan }) {
     `项目事实：${JSON.stringify(projects)}`,
     `上一版计划：${JSON.stringify(previousPlan)}`,
   ].join("\n");
+}
+
+function buildCheckpointPrompt({ node, workDate, messages, context }) {
+  return [
+    "Classify one fixed-checkpoint batch. Do not execute actions or claim scheduling.",
+    "Interrupt only for an unusable Jixiang OS bug, explicit current business loss,",
+    "a real owner-only deadline, or a blocker affecting multiple people.",
+    "Personal IP is otherwise default priority. Ideas without deadlines enter candidate_pool.",
+    "Never invent deadlines, losses, customers, owners, evidence, or attachment contents.",
+    "Each executable task needs 1-8 concrete 15-45 minute checkpoints.",
+    `Checkpoint node: ${JSON.stringify(node)}`,
+    `Work date: ${JSON.stringify(workDate)}`,
+    `Messages: ${JSON.stringify(messages)}`,
+    `Context: ${JSON.stringify(context)}`,
+  ].join("\n");
+}
+
+const CHECKPOINT_CATEGORIES = new Set([
+  "task", "idea", "system_bug", "meeting", "blocker", "defer_reason", "evidence", "communication",
+]);
+const CHECKPOINT_DISPOSITIONS = new Set([
+  "interrupt_now", "schedule_today", "candidate_pool", "do_not_schedule",
+  "task_feedback", "evidence_submission", "no_action",
+]);
+const CHECKPOINT_ITEM_FIELDS = [
+  "messageIds", "category", "disposition", "title", "projectId", "urgency", "mustBeOwner",
+  "estimateMinutes", "dueAt", "nextAction", "doneDefinition", "checkpoints", "rationale",
+];
+
+function validateCheckpointAnalysis(value, messages) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid checkpoint analysis");
+  if (Object.keys(value).some((field) => !["items", "combinedReplyContext"].includes(field))) {
+    throw new Error("unsupported checkpoint analysis field");
+  }
+  if (!Array.isArray(value.items)) throw new Error("missing checkpoint items");
+  if (typeof value.combinedReplyContext !== "string") throw new Error("missing combinedReplyContext");
+  const knownMessageIds = new Set(messages.map((message) => message?.messageId).filter(Boolean));
+  const classifiedMessageIds = new Set();
+  for (const item of value.items) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("invalid checkpoint item");
+    if (Object.keys(item).some((field) => !CHECKPOINT_ITEM_FIELDS.includes(field))) throw new Error("unsupported checkpoint item field");
+    for (const field of CHECKPOINT_ITEM_FIELDS) {
+      if (!(field in item)) throw new Error(`missing checkpoint item field: ${field}`);
+    }
+    if (!Array.isArray(item.messageIds) || item.messageIds.length < 1
+      || item.messageIds.some((id) => typeof id !== "string" || !id || !knownMessageIds.has(id))) {
+      throw new Error("invalid checkpoint messageIds");
+    }
+    for (const id of item.messageIds) {
+      if (classifiedMessageIds.has(id)) throw new Error("duplicate checkpoint messageId");
+      classifiedMessageIds.add(id);
+    }
+    if (!CHECKPOINT_CATEGORIES.has(item.category)) throw new Error("invalid checkpoint category");
+    if (!CHECKPOINT_DISPOSITIONS.has(item.disposition)) throw new Error("invalid checkpoint disposition");
+    if (![item.title, item.nextAction, item.doneDefinition, item.rationale].every((entry) => typeof entry === "string" && entry.trim())) {
+      throw new Error("invalid checkpoint item text");
+    }
+    if (item.projectId !== null && (typeof item.projectId !== "string" || !item.projectId.trim())) throw new Error("invalid checkpoint projectId");
+    if (!URGENCY.has(item.urgency)) throw new Error("invalid checkpoint urgency");
+    if (typeof item.mustBeOwner !== "boolean") throw new Error("invalid checkpoint mustBeOwner");
+    if (!Number.isInteger(item.estimateMinutes) || item.estimateMinutes < 1) throw new Error("invalid checkpoint estimateMinutes");
+    if (item.dueAt !== null && (typeof item.dueAt !== "string" || Number.isNaN(Date.parse(item.dueAt)))) throw new Error("invalid checkpoint dueAt");
+    if (!Array.isArray(item.checkpoints) || item.checkpoints.length < 1 || item.checkpoints.length > 8
+      || item.checkpoints.some((entry) => typeof entry !== "string" || !entry.trim())) {
+      throw new Error("invalid checkpoint checkpoints");
+    }
+  }
+  if (classifiedMessageIds.size !== knownMessageIds.size) throw new Error("missing checkpoint message classification");
+}
+
+function fallbackCheckpointAnalysis(messages, error) {
+  return {
+    items: messages.map((message) => ({
+      messageIds: [String(message?.messageId || "unknown")],
+      category: "communication",
+      disposition: "candidate_pool",
+      title: "待人工复核的消息",
+      projectId: null,
+      urgency: "low",
+      mustBeOwner: false,
+      estimateMinutes: 15,
+      dueAt: null,
+      nextAction: "人工阅读原始消息并判断下一步",
+      doneDefinition: "完成分类并记录明确处理决定",
+      checkpoints: ["人工复核原始消息"],
+      rationale: "自动分析无效或不受支持，保守进入候选池，不打断也不排期",
+    })),
+    combinedReplyContext: "消息分析失败，已保守放入候选池等待人工复核",
+    analysisStatus: "failed",
+    analysisError: String(error?.message || error).slice(0, 500),
+  };
 }
 
 const WEEKLY_TASK_FIELDS = [

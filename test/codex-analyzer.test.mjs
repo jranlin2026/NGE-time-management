@@ -239,3 +239,87 @@ test("fallback task ids stay unique when projects reuse a deliverable id", async
   assert.match(result.tasks[0].taskId, /2026-W29:personal-ip:content-validation:video-01/);
   assert.match(result.tasks[1].taskId, /2026-W29:jixiang-os:release:video-01/);
 });
+
+test("analyzes one interval as one batch", async () => {
+  let invocation;
+  const analyzer = createCodexAnalyzer({}, { run: async (input) => {
+    invocation = input;
+    return JSON.stringify({
+      items: [{
+        messageIds: ["om-1", "om-2"], category: "idea", disposition: "candidate_pool",
+        title: "老板为什么要学Codex", projectId: "personal-ip", urgency: "low",
+        mustBeOwner: true, estimateMinutes: 40, dueAt: null,
+        nextAction: "写出一个真实成本案例", doneDefinition: "形成60秒脚本第一版",
+        checkpoints: ["确定真实案例", "写出开头钩子", "完成脚本第一版"],
+        rationale: "符合个人IP获客方向，但不应打断当前拍摄",
+      }],
+      combinedReplyContext: "一条有效选题进入候选池",
+    });
+  } });
+  const result = await analyzer.analyzeCheckpointMessages({
+    node: "09:00", workDate: "2026-07-13",
+    messages: [{ messageId: "om-1" }, { messageId: "om-2" }], context: {},
+  });
+
+  assert.equal(result.analysisStatus, "complete");
+  assert.equal(result.items[0].disposition, "candidate_pool");
+  assert.equal(invocation.mode, "checkpoint_messages");
+  assert.match(invocation.schemaPath, /codex-checkpoint-schema\.json$/);
+  assert.match(invocation.prompt, /Never invent deadlines, losses, customers, owners, evidence, or attachment contents\./);
+});
+
+test("invalid AI output falls back to one candidate review per message", async () => {
+  const analyzer = createCodexAnalyzer({}, { run: async () => "{}" });
+  const messages = [
+    { messageId: "om-9", content: { text: "想到一个功能" } },
+    { messageId: "om-10", content: { attachments: [{ name: "秘密方案.pdf" }] } },
+  ];
+  const result = await analyzer.analyzeCheckpointMessages({
+    node: "15:00", workDate: "2026-07-13", messages, context: {},
+  });
+
+  assert.equal(result.analysisStatus, "failed");
+  assert.deepEqual(result.items.map((item) => item.disposition), ["candidate_pool", "candidate_pool"]);
+  assert.deepEqual(result.items.map((item) => item.messageIds), [["om-9"], ["om-10"]]);
+  assert.doesNotMatch(JSON.stringify(result.items[1]), /秘密方案/);
+  assert.match(result.analysisError, /missing|invalid/i);
+});
+
+test("unsupported analyzer values never interrupt or schedule", async () => {
+  const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+    items: [{
+      messageIds: ["om-11"], category: "idea", disposition: "teleport_now",
+      title: "新想法", projectId: null, urgency: "high", mustBeOwner: false,
+      estimateMinutes: 20, dueAt: null, nextAction: "看看", doneDefinition: "看完",
+      checkpoints: ["看看"], rationale: "未知策略",
+    }],
+    combinedReplyContext: "立即处理",
+  }) });
+  const result = await analyzer.analyzeCheckpointMessages({
+    node: "18:00", workDate: "2026-07-13", messages: [{ messageId: "om-11" }], context: {},
+  });
+
+  assert.equal(result.analysisStatus, "failed");
+  assert.equal(result.items[0].disposition, "candidate_pool");
+});
+
+test("partial or root-extended batch output falls back for every source message", async () => {
+  const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({
+    items: [{
+      messageIds: ["om-12"], category: "idea", disposition: "candidate_pool",
+      title: "一个想法", projectId: null, urgency: "low", mustBeOwner: false,
+      estimateMinutes: 20, dueAt: null, nextAction: "记录想法", doneDefinition: "想法已记录",
+      checkpoints: ["记录想法"], rationale: "没有截止时间",
+    }],
+    combinedReplyContext: "已处理",
+    unsupportedAction: "schedule",
+  }) });
+  const result = await analyzer.analyzeCheckpointMessages({
+    node: "21:00", workDate: "2026-07-13",
+    messages: [{ messageId: "om-12" }, { messageId: "om-13" }], context: {},
+  });
+
+  assert.equal(result.analysisStatus, "failed");
+  assert.deepEqual(result.items.map((item) => item.messageIds), [["om-12"], ["om-13"]]);
+  assert.ok(result.items.every((item) => item.disposition === "candidate_pool"));
+});
