@@ -163,9 +163,23 @@ function e2eFixture() {
           { title: "剪辑发布", minutes: 30 },
         ],
       });
-      runtime.ops.replaceSchedule({ date: "2026-07-13", blocks: [{
-        taskId: "task-video", startsAt: "2026-07-13T02:00:00.000Z", endsAt: "2026-07-13T03:30:00.000Z", status: "doing", reason: "confirmed_daily_task",
-      }] });
+      runtime.ops.replaceSchedule({ date: "2026-07-13", blocks: [
+        {
+          taskId: "task-video", checkpointIndex: 0,
+          startsAt: "2026-07-13T02:00:00.000Z", endsAt: "2026-07-13T02:30:00.000Z",
+          status: "doing", reason: "confirmed_daily_task",
+        },
+        {
+          taskId: "task-video", checkpointIndex: 1,
+          startsAt: "2026-07-13T02:30:00.000Z", endsAt: "2026-07-13T03:00:00.000Z",
+          status: "planned", reason: "confirmed_daily_task",
+        },
+        {
+          taskId: "task-video", checkpointIndex: 2,
+          startsAt: "2026-07-13T03:00:00.000Z", endsAt: "2026-07-13T03:30:00.000Z",
+          status: "planned", reason: "confirmed_daily_task",
+        },
+      ] });
     },
     close() { runtime.db.close(); fs.rmSync(directory, { recursive: true, force: true }); },
   };
@@ -221,5 +235,7 @@ function message(messageId, text, createdAt) {
 }
 
 function scheduleShape(blocks) {
-  return blocks.map(({ taskId, startsAt, endsAt, status }) => ({ taskId, startsAt, endsAt, status }));
+  return blocks.map(({ taskId, checkpointIndex, startsAt, endsAt, status }) => (
+    { taskId, checkpointIndex, startsAt, endsAt, status }
+  ));
 }

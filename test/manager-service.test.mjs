@@ -113,6 +113,69 @@ test("task_dm replanning keeps schedule side effects but does not enqueue a task
   db.close();
 });
 
+test("materializes checkpoint blocks before persisting a daily schedule", async () => {
+  const { db, tasks, ops, manager } = setup();
+  tasks.create({
+    id: "timed-task",
+    rawInput: "按关卡执行",
+    status: "ready",
+    estimateMinutes: 60,
+    checkpoints: [
+      { title: "列提纲", minutes: 20 },
+      { title: "写初稿", minutes: 40 },
+    ],
+  });
+
+  const result = await manager.replanDay({
+    date: "2026-07-10",
+    now: NOW,
+    deliveryMode: "task_dm",
+  });
+
+  assert.deepEqual(result.blocks.map((block) => [
+    block.checkpointIndex,
+    block.startsAt,
+    block.endsAt,
+  ]), [
+    [0, "2026-07-10T02:00:00.000Z", "2026-07-10T02:20:00.000Z"],
+    [1, "2026-07-10T02:20:00.000Z", "2026-07-10T03:00:00.000Z"],
+  ]);
+  assert.deepEqual(
+    ops.currentSchedule("2026-07-10").map((block) => block.checkpointIndex),
+    [0, 1],
+  );
+  db.close();
+});
+
+test("does not select or remind a task whose checkpoint is outside the work date", async () => {
+  const { db, tasks, ops, manager, scheduled } = setup();
+  tasks.create({
+    id: "tomorrow-checkpoint",
+    rawInput: "明日执行",
+    status: "ready",
+    estimateMinutes: 30,
+    checkpoints: [{
+      title: "明日关卡",
+      minutes: 30,
+      startsAt: "2026-07-11T02:00:00.000Z",
+      endsAt: "2026-07-11T02:30:00.000Z",
+    }],
+  });
+
+  const result = await manager.replanDay({
+    date: "2026-07-10",
+    now: NOW,
+    deliveryMode: "task_dm",
+  });
+
+  assert.deepEqual(result.blocks, []);
+  assert.deepEqual(result.deferred, ["tomorrow-checkpoint"]);
+  assert.deepEqual(ops.currentSchedule("2026-07-10"), []);
+  assert.equal(tasks.findById("tomorrow-checkpoint").status, "ready");
+  assert.deepEqual(scheduled, []);
+  db.close();
+});
+
 test("12:00 policy puts a new today disposition into the real capacity-limited schedule", async () => {
   const { db, tasks, ops, manager } = setup();
   const policy = createCheckpointPolicy({ manager, tasks });

@@ -4,6 +4,7 @@ import { renderDailyPlanCard } from "./feishu-cards.mjs";
 import { createDailyTaskGenerator, isoWeekId } from "./daily-task-generator.mjs";
 import { createAcceptanceService } from "./acceptance-service.mjs";
 import { createProjectOperationsRepository } from "../db/project-operations-repository.mjs";
+import { materializeCheckpointSchedule } from "./checkpoint-scheduler.mjs";
 
 export function createManagerService(deps) {
   const {
@@ -253,10 +254,16 @@ export function createManagerService(deps) {
         tasks: activeTasks,
         settings: scheduleSettings,
       });
+    const checkpointSchedule = materializeCheckpointSchedule({
+      schedule: result,
+      tasks: activeTasks,
+      date: scheduleDate,
+      timezone: settings.timezone,
+    });
 
     for (const task of activeTasks) ops.cancelPendingReminders(task.id);
-    const stored = ops.replaceSchedule({ date: scheduleDate, blocks: result.blocks });
-    const selectedIds = new Set(result.blocks.map((block) => block.taskId));
+    const stored = ops.replaceSchedule({ date: scheduleDate, blocks: checkpointSchedule.blocks });
+    const selectedIds = new Set(checkpointSchedule.blocks.map((block) => block.taskId));
     for (const taskId of selectedIds) {
       const selectedTask = tasks.findById(taskId);
       if (["inbox", "open", "ready", "deferred"].includes(selectedTask.status)) {
@@ -298,7 +305,7 @@ export function createManagerService(deps) {
       ops.enqueueOutbox({
         kind: isDailyPlan ? "daily_plan_card" : "replan_card",
         payload: {
-          card: renderDailyPlanCard({ date: scheduleDate, blocks: enriched, capacityWarnings: result.capacityWarnings }),
+          card: renderDailyPlanCard({ date: scheduleDate, blocks: enriched, capacityWarnings: checkpointSchedule.capacityWarnings }),
           changed: reason,
           reason,
         },
@@ -310,7 +317,12 @@ export function createManagerService(deps) {
       payload: { date: scheduleDate, version: stored.version, reason, taskIds: [...selectedIds] },
       idempotencyKey: `schedule-event:${scheduleDate}:${stored.version}`,
     });
-    return { ...stored, deferred: result.deferred, reasons: result.reasons, capacityWarnings: result.capacityWarnings };
+    return {
+      ...stored,
+      deferred: checkpointSchedule.deferred,
+      reasons: checkpointSchedule.reasons,
+      capacityWarnings: checkpointSchedule.capacityWarnings,
+    };
   }
 
   async function resumeDeferredTask(taskId) {
