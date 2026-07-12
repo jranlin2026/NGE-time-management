@@ -43,6 +43,11 @@ import {
   selectReplyDestination,
 } from "./lib/feishu-events.mjs";
 import { zonedDateTimeToUtc } from "./lib/schedule-engine.mjs";
+import { createAutomationRepository } from "./db/automation-repository.mjs";
+import { createCheckpointRunner } from "./lib/checkpoint-runner.mjs";
+import { createCheckpointPolicy } from "./lib/checkpoint-policy.mjs";
+import { createFeishuTaskSynchronizer } from "./lib/feishu-task-sync.mjs";
+import { listConversationMessages, resolveDirectChatId } from "./lib/feishu-polling.mjs";
 
 export function createManagerApp(config, deps = {}) {
   const db = deps.db || openDatabase(config.dbPath);
@@ -214,6 +219,45 @@ export function createManagerApp(config, deps = {}) {
     generateWeeklyPlan: (input) => weeklyPlanning.generateDraft(input),
     state: { db, tasks, ops, projectOps, projectRepo, weeklyPlanRepo, weeklyPlanning, dailyTaskGenerator, acceptance, manager, reminderEngine, outboxWorker, settings },
   };
+}
+
+export function createManagerRuntime(config, deps = {}) {
+  const app = createManagerApp(config, deps);
+  const state = app.state;
+  const automation = deps.automation || createAutomationRepository(state.db);
+  const taskSync = deps.taskSync || createFeishuTaskSynchronizer({
+    config,
+    tasks: state.tasks,
+    links: automation,
+    scheduleForDate: (date) => ({ date, blocks: state.ops.currentSchedule(date) }),
+  });
+  const policy = deps.policy || createCheckpointPolicy({
+    manager: state.manager,
+    tasks: state.tasks,
+    reviewDay: ({ date }) => runRuntimeDailyReview({ date, config, state }),
+  });
+  const checkpointRunner = createCheckpointRunner({
+    config,
+    runtime: automation,
+    resolveChatId: () => resolveDirectChatId(config, state.ops),
+    pollMessages: (input) => listConversationMessages(config, input),
+    taskSync,
+    analyzer: state.manager ? (deps.analyzer || createCodexAnalyzer(config)) : deps.analyzer,
+    policy,
+    ops: state.ops,
+    outboxWorker: state.outboxWorker,
+    clock: deps.clock,
+    getCompletedNodes: (workDate) => state.db.prepare("SELECT node FROM automation_runs WHERE work_date=? AND status='completed'").all(workDate).map((row) => row.node),
+  });
+  return { ...state, automation, taskSync, policy, checkpointRunner, close: () => app.stop() };
+}
+
+async function runRuntimeDailyReview({ date, config, state }) {
+  const summary = buildDailyReview({ date, tasks: state.tasks.listAll(), schedule: { blocks: state.ops.currentSchedule(date) }, events: state.ops.listEvents({ date }) });
+  const renderedText = renderDailyReview(summary);
+  state.ops.saveReview({ date, summary, renderedText });
+  await exportDay({ exportDir: config.markdownExportDir, kbDir: config.kbDir, date, schedule: { blocks: state.ops.currentSchedule(date) }, review: summary });
+  return { summary, renderedText };
 }
 
 export async function connectFeishu(config, { manager, tasks, ops, projectRepo, weeklyPlanning }) {
@@ -428,7 +472,8 @@ async function deliverOutbox(config, row, { tasks, ops, settings }) {
 
   const effectiveConfig = {
     ...config,
-    feishuReceiveId: config.feishuReceiveId || ops.getSetting("feishu_receive_id") || "",
+    feishuReceiveId: row.kind === "private_checkpoint_summary" ? row.payload.receiveId : (config.feishuReceiveId || ops.getSetting("feishu_receive_id") || ""),
+    feishuReceiveIdType: row.kind === "private_checkpoint_summary" ? "open_id" : config.feishuReceiveIdType,
   };
   const card = cardForOutbox(row, { tasks, settings });
   const text = textForOutbox(row);
@@ -479,6 +524,7 @@ const PROJECT_SPECS = [
 ];
 
 function textForOutbox(row) {
+  if (row.kind === "private_checkpoint_summary") return row.payload.text;
   if (row.kind === "task_ack") return `已入池：${row.payload.title}\n${row.payload.text}`;
   if (row.kind === "status_message") return row.payload.text;
   if (row.kind === "no_response_message") return `${row.payload.mentionOwner ? "@你，" : ""}还没有收到反馈：${row.payload.title}\n现在只决定一件事：开始、完成，还是卡住？`;

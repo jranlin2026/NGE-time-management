@@ -14,6 +14,7 @@
     "create:tasklist": "node scripts/create-feishu-tasklist.mjs",
     "tasklist:add-member": "node scripts/add-tasklist-member.mjs",
     "manager": "node scripts/run-manager.mjs",
+    "checkpoint": "node scripts/run-checkpoint.mjs",
     "manager:install": "node scripts/install-launchd.mjs",
     "manager:uninstall": "node scripts/uninstall-launchd.mjs",
     "test": "node --test"

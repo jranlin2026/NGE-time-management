@@ -55,7 +55,7 @@ export function normalizeManagerAction(input) {
   };
 }
 
-export async function sendFeishuMessage(config, payload) {
+export async function sendFeishuMessage(config, payload, dependencies = {}) {
   const receiveId = payload.receiveId || config.feishuReceiveId;
   const receiveIdType = payload.receiveIdType || config.feishuReceiveIdType || "open_id";
   if (!receiveId) throw new Error("missing FEISHU_RECEIVE_ID");
@@ -65,7 +65,8 @@ export async function sendFeishuMessage(config, payload) {
     msg_type: isCard ? "interactive" : "text",
     content: JSON.stringify(isCard ? payload.card : { text: payload.text }),
   };
-  const response = await feishuRequest(
+  const request = dependencies.request || feishuRequest;
+  const response = await request(
     config,
     `/im/v1/messages?receive_id_type=${encodeURIComponent(receiveIdType)}`,
     { method: "POST", body },

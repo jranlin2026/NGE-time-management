@@ -24,7 +24,8 @@ export function createOutboxWorker({ ops, send, clock }) {
 
 function sanitizeError(error) {
   const message = String(error?.message || error)
-    .replace(/(app_secret|token|webhook|authorization)[^\s,]*/gi, "$1=[redacted]")
+    .replace(/\bBearer\s+[^\s,]+/gi, "Bearer [redacted]")
+    .replace(/(app_secret|token|webhook|authorization)\s*[:=]\s*[^\s,]+/gi, "$1=[redacted]")
     .slice(0, 500);
   return new Error(message);
 }
