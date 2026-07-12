@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { deliverFeishuOutbound } from "../src/lib/feishu-delivery.mjs";
+import { sendFeishuMessage } from "../src/lib/feishu-messages.mjs";
 
 test("falls back to the group webhook before a personal receiver is bound", async () => {
   const calls = [];
@@ -18,6 +19,16 @@ test("falls back to the group webhook before a personal receiver is bound", asyn
 
   assert.deepEqual(calls.map((call) => call.text), ["今日计划已生成"]);
   assert.deepEqual(result, { externalId: "webhook-message" });
+});
+
+test("sends a stable provider uuid no longer than 50 characters", async () => {
+  const bodies = [];
+  const payload = { kind: "text", text: "hello", idempotencyKey: "private-summary:very-long-key" };
+  const request = async (_config, _path, options) => { bodies.push(options.body); return { data: { message_id: "om-1" } }; };
+  await sendFeishuMessage({ feishuReceiveId: "ou-owner" }, payload, { request });
+  await sendFeishuMessage({ feishuReceiveId: "ou-owner" }, payload, { request });
+  assert.equal(bodies[0].uuid, bodies[1].uuid);
+  assert.ok(bodies[0].uuid.length <= 50);
 });
 
 test("uses the personal receiver after it is bound", async () => {

@@ -34,6 +34,8 @@ function policyFixture({ scheduledTask = null, doingTask = null, remainingTasks 
         listActive: () => tasks,
         findDoing: () => doingTask,
         create: (input) => {
+          const existing = tasks.find((item) => item.id === input.id);
+          if (existing) return existing;
           created.push(input);
           const saved = task({ id: `new-${created.length}`, ...input });
           tasks.push(saved);
@@ -113,6 +115,18 @@ test("only actionable dispositions create tasks and retain timed checkpoint obje
   assert.deepEqual(fixture.created[0].checkpoints, [{ title: "列提纲", minutes: 15, completed: false }]);
 });
 
+test("retrying a failed batch reuses the same stable local task id", async () => {
+  const fixture = policyFixture();
+  const input = {
+    node: "09:00", workDate: "2026-07-13", messages: [{ messageId: "om-b" }, { messageId: "om-a" }], remoteProgress: emptyProgress,
+    analysis: { items: [{ messageIds: ["om-b", "om-a"], disposition: "schedule_today", title: "写稳定脚本", estimateMinutes: 30, checkpoints: [{ title: "写出脚本初稿", minutes: 30 }] }] },
+  };
+  await fixture.policy.apply(input);
+  await fixture.policy.apply(input);
+  assert.equal(fixture.created.length, 1);
+  assert.match(fixture.created[0].id, /^checkpoint-[a-f0-9]{32}$/);
+});
+
 test("12:00 schedules a newly created today task before progress handling", async () => {
   const fixture = policyFixture();
   const result = await fixture.policy.apply({
@@ -121,7 +135,7 @@ test("12:00 schedules a newly created today task before progress handling", asyn
   });
   assert.equal(fixture.replans.length, 1);
   assert.equal(fixture.replans[0].deliveryMode, "task_dm");
-  assert.equal(result.schedule.blocks.some((block) => block.taskId === "new-1"), true);
+  assert.equal(result.schedule.blocks.some((block) => block.taskId === fixture.created[0].id), true);
 });
 
 test("15:00 replans a new task even while preserving a doing task", async () => {
@@ -131,7 +145,7 @@ test("15:00 replans a new task even while preserving a doing task", async () => 
     analysis: { items: [{ disposition: "schedule_today", title: "下午交付", estimateMinutes: 30, checkpoints: [{ title: "导出交付文件", minutes: 30 }] }] },
   });
   assert.equal(fixture.replans.length, 1);
-  assert.deepEqual(result.schedule.blocks.map((block) => block.taskId), ["doing", "new-1"]);
+  assert.deepEqual(result.schedule.blocks.map((block) => block.taskId), ["doing", fixture.created[0].id]);
 });
 
 test("remote parent completion is routed through manager acceptance handling first", async () => {

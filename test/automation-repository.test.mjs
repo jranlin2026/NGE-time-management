@@ -115,6 +115,16 @@ test("sanitizes stored run errors to 500 characters", () => {
   db.close();
 });
 
+test("redacts bearer credentials for direct repository callers", () => {
+  const db = openDatabase(":memory:");
+  const repo = createAutomationRepository(db, { now: () => "2026-07-13T01:00:00.000Z" });
+  const claim = repo.claimRun({ runKey: "run-secret", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" });
+  repo.failRun("run-secret", claim.claimToken, new Error("Bearer super-secret"));
+  const error = db.prepare("SELECT error FROM automation_runs WHERE run_key='run-secret'").get().error;
+  assert.equal(error, "Bearer [redacted]");
+  db.close();
+});
+
 test("rejects stale workers after an expired run is reclaimed", () => {
   const db = openDatabase(":memory:");
   const clock = { value: "2026-07-13T01:00:00.000Z" };

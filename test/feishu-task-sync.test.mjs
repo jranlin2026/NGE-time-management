@@ -88,20 +88,57 @@ test("updates an adopted remote task before persisting the current snapshot", as
   await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
 
   assert.equal(fixture.api.createdParents.length, 1);
-  assert.deepEqual(fixture.api.updated, [{
-    guid: "parent-1",
-    body: {
-      summary: "完成口播视频",
-      description: "",
-      clientToken: fixture.api.createdParents[0].clientToken,
-      startAt: "2026-07-13T02:00:00.000Z",
-      dueAt: "2026-07-13T04:30:00.000Z",
-    },
-  }]);
+  assert.equal(fixture.api.updated[0].guid, "parent-1");
+  assert.equal(fixture.api.updated[0].body.clientToken, fixture.api.createdParents[0].clientToken);
+  assert.match(fixture.api.updated[0].body.description, /\[nge-managed:/);
+  assert.equal(fixture.api.updated[0].body.dueAt, "2026-07-13T04:30:00.000Z");
   assert.equal(links.findFeishuLink("task-1", -1).taskGuid, "parent-1");
   assert.match(fixture.api.createdParents[0].clientToken, /^nge-[a-f0-9]{64}$/);
   await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
   assert.equal(fixture.api.updated.length, 1);
+});
+
+test("adopts a crash-created parent by managed description marker when list omits client_token", async () => {
+  const fixture = syncFixture();
+  let fail = true;
+  const original = fixture.links.upsertFeishuLink;
+  fixture.links.upsertFeishuLink = (link) => {
+    if (fail) { fail = false; throw new Error("simulated link write crash"); }
+    return original.call(fixture.links, link);
+  };
+  await assert.rejects(fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule }), /link write crash/);
+  fixture.api.remoteParents = [{ guid: "parent-1", description: fixture.api.createdParents[0].description }];
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
+  assert.equal(fixture.api.createdParents.length, 1);
+  assert.match(fixture.api.remoteParents[0].description, /\[nge-managed:[a-f0-9]{32}\]/);
+});
+
+test("adopts a crash-created child by managed description marker when list omits client_token", async () => {
+  const fixture = syncFixture({ checkpoints: [{ title: "写脚本", completed: false }] });
+  const original = fixture.links.upsertFeishuLink;
+  let writes = 0;
+  fixture.links.upsertFeishuLink = (link) => {
+    writes += 1;
+    if (writes === 2) throw new Error("simulated child link write crash");
+    return original.call(fixture.links, link);
+  };
+  await assert.rejects(fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule }), /child link write crash/);
+  fixture.api.remoteChildren = [{ guid: "child-0", parent_guid: "parent-1", description: fixture.api.createdChildren[0].description }];
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
+  assert.equal(fixture.api.createdChildren.length, 1);
+  assert.equal(fixture.links.findFeishuLink("task-1", 0).taskGuid, "child-0");
+});
+
+test("pushes completed child and accepted parent states but not pending acceptance", async () => {
+  const fixture = syncFixture({ checkpoints: [{ title: "写脚本", completed: true }] });
+  fixture.task.status = "done";
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
+  assert.ok(fixture.api.createdParents[0].completedAt);
+  assert.ok(fixture.api.createdChildren[0].completedAt);
+  const pending = syncFixture();
+  pending.task.status = "pending_acceptance";
+  await pending.sync.pushSchedule({ date: "2026-07-13", schedule: pending.schedule });
+  assert.equal(pending.api.createdParents[0].completedAt, undefined);
 });
 
 test("pulls progress only for task ids in the requested date schedule", async () => {

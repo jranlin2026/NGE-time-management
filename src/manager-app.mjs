@@ -258,6 +258,9 @@ export function createManagerRuntime(config, deps = {}) {
         .all(previousDate, workDate)
         .map((row) => `${row.work_date}:${row.node}`);
     },
+    reconcileProjectWrites: deps.reconcileProjects || (() => reconcileProjectWrites({
+      tasks: state.tasks, ops: state.ops, acceptance: state.acceptance,
+    })),
   });
   return { ...state, automation, taskSync, policy, checkpointRunner, close: () => app.stop() };
 }
@@ -487,8 +490,8 @@ async function deliverOutbox(config, row, { tasks, ops, settings }) {
   };
   const card = cardForOutbox(row, { tasks, settings });
   const text = textForOutbox(row);
-  if (card) return deliverFeishuOutbound(effectiveConfig, { kind: "card", card, text });
-  return deliverFeishuOutbound(effectiveConfig, { kind: "text", text });
+  if (card) return deliverFeishuOutbound(effectiveConfig, { kind: "card", card, text, idempotencyKey: row.idempotencyKey });
+  return deliverFeishuOutbound(effectiveConfig, { kind: "text", text, idempotencyKey: row.idempotencyKey });
 }
 
 function cardForOutbox(row, { tasks, settings }) {
@@ -559,7 +562,7 @@ async function importLegacyTasksOnce(config, tasks, ops) {
   ops.setSetting("legacy_markdown_imported", { imported, at: new Date().toISOString() });
 }
 
-async function reconcileProjectWrites({ tasks, ops, acceptance }) {
+export async function reconcileProjectWrites({ tasks, ops, acceptance }) {
   const reconciled = [];
   for (const event of ops.listEvents({ kind: "project_sync_reconciliation_required" })) {
     const acceptanceId = event.payload?.acceptanceId;

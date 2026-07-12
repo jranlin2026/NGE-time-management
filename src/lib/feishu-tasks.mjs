@@ -165,6 +165,7 @@ export function buildTaskBody(config, task, options = {}) {
   };
 
   if (task.clientToken) body.client_token = task.clientToken;
+  if (task.completedAt) body.completed_at = String(new Date(task.completedAt).getTime());
 
   if (task.dueDate) {
     body.due = {

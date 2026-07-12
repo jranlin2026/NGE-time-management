@@ -1,5 +1,6 @@
 import { withTransaction } from "./database.mjs";
 import { randomUUID } from "node:crypto";
+import { sanitizeError } from "../lib/sanitize-error.mjs";
 
 const LOCK_NAME = "global-runner";
 
@@ -47,11 +48,6 @@ function mapLink(row) {
     snapshotHash: row.snapshot_hash,
     updatedAt: row.updated_at,
   };
-}
-
-function sanitizeError(error) {
-  const text = error instanceof Error ? error.message : String(error ?? "");
-  return text.slice(0, 500);
 }
 
 export function createAutomationRepository(db, deps = {}) {

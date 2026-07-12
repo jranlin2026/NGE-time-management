@@ -39,15 +39,22 @@ test("one day flows from merged DMs through subtasks and review", async (t) => {
   await day.runner.run({ now: "2026-07-13T21:00:00+08:00" });
   assert.equal(day.tasks.findById("task-video").status, "pending_acceptance");
 
+  day.feishu.addDirectMessages([
+    message("om-proof", "已发布 https://example.com/video", "2026-07-13T14:00:00.000Z"),
+  ]);
   await day.runner.run({ now: "2026-07-14T00:00:00+08:00" });
+  assert.equal(day.tasks.findById("task-video").status, "done");
+  assert.match(fs.readFileSync(path.join(day.directory, "项目", "个人IP.md"), "utf8"), /video-01.*accepted.*https:\/\/example\.com\/video/);
+  assert.equal(fs.readdirSync(path.join(day.directory, "项目变更记录")).length, 1);
   const review = day.ops.getReview("2026-07-13");
   assert.match(review.renderedText, /今日复盘/);
-  assert.match(review.renderedText, /完成主任务：0\/1/);
+  assert.match(review.renderedText, /完成主任务：1\/1/);
   assert.match(review.renderedText, /完成子任务：1\/3/);
 });
 
 function e2eFixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "checkpoint-e2e-"));
+  writeProject(directory);
   const messages = [];
   const privateReplies = [];
   const parentTasks = [];
@@ -71,6 +78,15 @@ function e2eFixture() {
   const analyzer = {
     async analyzeCheckpointMessages({ messages: inbound }) {
       if (!inbound.length) return { items: [] };
+      if (inbound.some((item) => item.messageId === "om-proof")) return {
+        items: [{
+          messageIds: ["om-proof"], category: "evidence", disposition: "evidence_submission",
+          taskId: null, evidence: { messageIds: ["om-proof"], text: "已发布", links: ["https://example.com/video"] },
+          title: "发布证据", projectId: "personal-ip", urgency: "low", mustBeOwner: true,
+          estimateMinutes: 15, dueAt: null, nextAction: "核验发布链接", doneDefinition: "链接可访问",
+          checkpoints: [{ title: "核验发布链接", minutes: 15 }], rationale: "用户提交了可见链接",
+        }],
+      };
       return {
         items: [{
           messageIds: inbound.map((item) => item.messageId),
@@ -82,6 +98,7 @@ function e2eFixture() {
       };
     },
     async analyzeTask() { throw new Error("ordinary task analysis is outside this E2E"); },
+    async analyzeAcceptance() { return { status: "accepted", explanation: "发布链接与交付项相关" }; },
   };
   const runtime = createManagerRuntime({
     dbPath: ":memory:",
@@ -117,7 +134,7 @@ function e2eFixture() {
     },
   };
   return {
-    ...runtime,
+    ...runtime, directory,
     runner,
     get events() { return runtime.ops.listEvents(); },
     feishu: {
@@ -132,6 +149,8 @@ function e2eFixture() {
         title: "完成老板为什么要学 Codex 口播",
         project: "个人IP",
         projectId: "personal-ip",
+        milestoneId: "content-validation",
+        deliverableId: "video-01",
         status: "doing",
         requiresEvidence: true,
         estimateMinutes: 90,
@@ -147,6 +166,51 @@ function e2eFixture() {
     },
     close() { runtime.db.close(); fs.rmSync(directory, { recursive: true, force: true }); },
   };
+}
+
+function writeProject(root) {
+  const projectDir = path.join(root, "项目");
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, "个人IP.md"), `---
+project_id: personal-ip
+name: 个人IP
+status: active
+priority: 1
+updated_at: 2026-07-12T08:00:00+08:00
+---
+
+# 个人IP
+
+<!-- time-manager:managed:start -->
+## 当前阶段
+
+内容冷启动
+
+## 里程碑
+
+| milestone_id | 名称 | 截止时间 | 项目权重 | 状态 |
+| --- | --- | --- | ---: | --- |
+| content-validation | 验证内容方向 | 2026-07-31 | 100 | active |
+
+## 里程碑交付项
+
+| deliverable_id | milestone_id | 交付项 | 里程碑权重 | 状态 | 验收证据 |
+| --- | --- | --- | ---: | --- | --- |
+| video-01 | content-validation | 发布第 1 条短视频 | 100 | pending | |
+
+## 当前风险
+
+- 暂无。
+
+## 下一步候选
+
+- 发布短视频。
+
+## 最近一次实质成果
+
+尚无。
+<!-- time-manager:managed:end -->
+`, "utf8");
 }
 
 function message(messageId, text, createdAt) {

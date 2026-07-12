@@ -418,6 +418,21 @@ test("rejects checkpoint objects whose minutes are outside 15 to 45", async (t) 
   }
 });
 
+test("accepts structured evidence submissions with nullable task id without inventing attachment contents", async () => {
+  const item = checkpointItem({
+    messageIds: ["om-proof"],
+    category: "evidence", disposition: "evidence_submission", taskId: null,
+    evidence: { messageIds: ["om-proof"], text: "已发布", links: ["https://example.com/proof"] },
+  });
+  const analyzer = createCodexAnalyzer({}, { run: async () => JSON.stringify({ items: [item], combinedReplyContext: "提交证据" }) });
+  const result = await analyzer.analyzeCheckpointMessages({
+    node: "15:00", workDate: "2026-07-13",
+    messages: [{ messageId: "om-proof", content: { text: "已发布 https://example.com/proof" } }], context: {},
+  });
+  assert.equal(result.analysisStatus, "complete");
+  assert.deepEqual(result.items[0].evidence.links, ["https://example.com/proof"]);
+});
+
 test("accepts checkpoint objects at the 15 and 45 minute boundaries", async (t) => {
   for (const estimateMinutes of [30, 90]) {
     await t.test(`${estimateMinutes} minutes for two checkpoints`, async () => {

@@ -3,6 +3,7 @@ import { loadConfig } from "../src/config.mjs";
 import { listConversationMessages } from "../src/lib/feishu-polling.mjs";
 import { resolveCheckpointContext } from "../src/lib/checkpoint-schedule.mjs";
 import { sanitizeError } from "../src/lib/sanitize-error.mjs";
+import { validateCheckpointNode } from "../src/lib/checkpoint-runner.mjs";
 
 let runtime;
 try {
@@ -40,6 +41,7 @@ async function runCheckpoint(config, options) {
 }
 
 async function runDryDiagnostic(config, options) {
+  if (options.node) validateCheckpointNode(options.node);
   if (!config.feishuP2pChatId) throw new Error("dry-run requires FEISHU_P2P_CHAT_ID");
   const instant = new Date(options.now || new Date());
   if (Number.isNaN(instant.getTime())) throw new Error("valid checkpoint time is required");

@@ -16,7 +16,7 @@ export function createCheckpointRunner(deps) {
       const context = resolveCheckpointContext({ now: instant, timezone });
       if (dryRun) {
         const nodes = forcedNode
-          ? [validateNode(forcedNode)]
+          ? [validateCheckpointNode(forcedNode)]
           : dueCheckpointNodes({ now: instant, timezone, completedNodes: [] }).nodes;
         return emptySummary(context.workDate, nodes, "dry_run");
       }
@@ -29,9 +29,10 @@ export function createCheckpointRunner(deps) {
       let activeRun = null;
       let summary = emptySummary(context.workDate, [], "completed");
       try {
+        await deps.reconcileProjectWrites?.();
         const completedNodes = await deps.getCompletedNodes?.(context.workDate) || [];
         const refs = forcedNode
-          ? [{ node: validateNode(forcedNode), workDate: context.workDate, pollThrough: instant.toISOString() }]
+          ? [{ node: validateCheckpointNode(forcedNode), workDate: context.workDate, pollThrough: instant.toISOString() }]
           : executionRefs({ instant, timezone, context, completedNodes });
         summary = emptySummary(context.workDate, refs.map((ref) => ref.node), "completed");
         const chatId = await deps.resolveChatId();
@@ -136,7 +137,7 @@ function requireDependencies(deps) {
   }
 }
 
-function validateNode(node) {
+export function validateCheckpointNode(node) {
   if (!["08:00", "09:00", "12:00", "15:00", "18:00", "21:00", "24:00"].includes(node)) {
     throw new Error(`unsupported checkpoint node: ${node}`);
   }

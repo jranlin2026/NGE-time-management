@@ -1,5 +1,6 @@
 import { feishuRequest } from "./feishu-openapi.mjs";
 import { createTask, updateTask } from "./feishu-tasks.mjs";
+import { createHash } from "node:crypto";
 
 const TEXT_ACTIONS = [
   [/^开始[:：]\s*(.+)$/, "start"],
@@ -64,6 +65,7 @@ export async function sendFeishuMessage(config, payload, dependencies = {}) {
     receive_id: receiveId,
     msg_type: isCard ? "interactive" : "text",
     content: JSON.stringify(isCard ? payload.card : { text: payload.text }),
+    ...(payload.idempotencyKey ? { uuid: providerUuid(payload.idempotencyKey) } : {}),
   };
   const request = dependencies.request || feishuRequest;
   const response = await request(
@@ -75,6 +77,10 @@ export async function sendFeishuMessage(config, payload, dependencies = {}) {
     externalId: response?.data?.message_id || "",
     chatId: response?.data?.chat_id || "",
   };
+}
+
+function providerUuid(idempotencyKey) {
+  return `nge-${createHash("sha256").update(String(idempotencyKey)).digest("hex").slice(0, 40)}`;
 }
 
 export async function syncFeishuTask(config, operation) {

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const ACTIONABLE_DISPOSITIONS = new Set(["interrupt_now", "schedule_today"]);
 const EVENING_NODES = new Set(["18:00", "21:00"]);
 
@@ -90,9 +92,17 @@ async function applyRemoteProgress(state, deps) {
 
 async function applyDeterministicItems(state, deps) {
   for (const item of state.analysis.items || []) {
-    if (item.disposition === "evidence_submission" && deps.manager.submitEvidence && item.taskId) {
-      await deps.manager.submitEvidence({ taskId: item.taskId, evidence: item.evidence || item.title, messageIds: item.messageIds });
-      state.actions.push({ type: "evidence_submitted", taskId: item.taskId });
+    if (item.disposition === "evidence_submission" && deps.manager.submitEvidence) {
+      const pending = deps.manager.listPendingAcceptance?.() || [];
+      const taskId = item.taskId || (pending.length === 1 ? pending[0].id : null);
+      if (!taskId) continue;
+      await deps.manager.submitEvidence({
+        taskId,
+        evidence: evidenceValues(item.evidence, item.title, state.messages),
+        messageIds: item.evidence?.messageIds || item.messageIds,
+        idempotencyKey: `checkpoint-evidence:${stableDigest(item.evidence?.messageIds || item.messageIds || [])}`,
+      });
+      state.actions.push({ type: "evidence_submitted", taskId });
       state.changed = true;
     } else if (item.disposition === "task_feedback") {
       state.actions.push({ type: "task_feedback", taskId: item.taskId || null, detail: item.nextAction || item.title });
@@ -110,7 +120,7 @@ async function applyDeterministicItems(state, deps) {
 }
 
 async function createActionableTasks(state, deps) {
-  for (const item of state.analysis.items || []) {
+  for (const [itemIndex, item] of (state.analysis.items || []).entries()) {
     if (!ACTIONABLE_DISPOSITIONS.has(item.disposition)) continue;
     if (item.disposition === "interrupt_now" && item.groundedP0 !== true) {
       state.actions.push({ type: "candidate_recorded", title: item.title, reason: "ungrounded_interrupt" });
@@ -118,7 +128,7 @@ async function createActionableTasks(state, deps) {
       state.changed = true;
       continue;
     }
-    const created = await deps.tasks.create(taskInput(item));
+    const created = await deps.tasks.create(taskInput(item, itemIndex));
     state.actions.push({ type: "task_created", disposition: item.disposition, taskId: created.id });
     const doing = deps.tasks.findDoing?.();
     if (item.disposition === "interrupt_now" && doing && doing.id !== created.id) {
@@ -209,8 +219,9 @@ async function runDailyReview(state, deps) {
   state.changed = true;
 }
 
-function taskInput(item) {
+function taskInput(item, itemIndex) {
   return {
+    id: `checkpoint-${stableDigest([...(item.messageIds || [])].sort(), item.disposition, itemIndex)}`,
     rawInput: item.title,
     title: item.title,
     project: item.projectId || "未归类",
@@ -228,6 +239,26 @@ function taskInput(item) {
       completed: false,
     })),
   };
+}
+
+function stableDigest(...parts) {
+  return createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 32);
+}
+
+function evidenceValues(evidence, fallback, messages) {
+  if (!evidence || typeof evidence !== "object") return fallback ? [{ type: "text", value: fallback }] : [];
+  const byId = new Map((messages || []).map((message) => [message.messageId, message]));
+  const sourceReferences = (evidence.messageIds || []).flatMap((id) => {
+    const content = byId.get(id)?.content || {};
+    if (content.imageKey) return [{ type: "feishu_image", value: content.imageKey }];
+    if (content.fileKey) return [{ type: "feishu_file", value: content.fileKey }];
+    return [];
+  });
+  return [
+    ...(evidence.text ? [{ type: "text", value: evidence.text }] : []),
+    ...(evidence.links || []).map((value) => ({ type: "url", value })),
+    ...sourceReferences,
+  ];
 }
 
 function sumCheckpointMinutes(checkpoints = []) {

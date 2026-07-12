@@ -235,6 +235,7 @@ function buildCheckpointPrompt({ node, workDate, messages, context }) {
     "a real owner-only deadline, or a blocker affecting multiple people.",
     "Personal IP is otherwise default priority. Ideas without deadlines enter candidate_pool.",
     "Never invent deadlines, losses, customers, owners, evidence, or attachment contents.",
+    "For evidence_submission, use nullable taskId and evidence {messageIds,text,links}; copy only visible text and literal links from source messages.",
     "Each executable task needs 1-8 concrete 15-45 minute checkpoints.",
     `Checkpoint node: ${JSON.stringify(node)}`,
     `Work date: ${JSON.stringify(workDate)}`,
@@ -252,8 +253,9 @@ const CHECKPOINT_DISPOSITIONS = new Set([
 ]);
 const CHECKPOINT_ITEM_FIELDS = [
   "messageIds", "category", "disposition", "title", "projectId", "urgency", "mustBeOwner",
-  "estimateMinutes", "dueAt", "nextAction", "doneDefinition", "checkpoints", "rationale",
+  "estimateMinutes", "dueAt", "nextAction", "doneDefinition", "checkpoints", "rationale", "taskId", "evidence",
 ];
+const REQUIRED_CHECKPOINT_ITEM_FIELDS = CHECKPOINT_ITEM_FIELDS.filter((field) => !["taskId", "evidence"].includes(field));
 function originalMessageText(message) {
   if (typeof message?.content?.text === "string") return message.content.text;
   if (typeof message?.content === "string") return message.content;
@@ -339,7 +341,7 @@ function validateCheckpointAnalysis(value, messages, workDate) {
   for (const item of value.items) {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("invalid checkpoint item");
     if (Object.keys(item).some((field) => !CHECKPOINT_ITEM_FIELDS.includes(field))) throw new Error("unsupported checkpoint item field");
-    for (const field of CHECKPOINT_ITEM_FIELDS) {
+    for (const field of REQUIRED_CHECKPOINT_ITEM_FIELDS) {
       if (!(field in item)) throw new Error(`missing checkpoint item field: ${field}`);
     }
     if (!Array.isArray(item.messageIds) || item.messageIds.length < 1
@@ -352,6 +354,8 @@ function validateCheckpointAnalysis(value, messages, workDate) {
     }
     if (!CHECKPOINT_CATEGORIES.has(item.category)) throw new Error("invalid checkpoint category");
     if (!CHECKPOINT_DISPOSITIONS.has(item.disposition)) throw new Error("invalid checkpoint disposition");
+    if (item.taskId !== undefined && item.taskId !== null && (typeof item.taskId !== "string" || !item.taskId.trim())) throw new Error("invalid checkpoint taskId");
+    if (item.disposition === "evidence_submission") validateCheckpointEvidence(item, messagesById);
     if (![item.title, item.nextAction, item.doneDefinition, item.rationale].every((entry) => typeof entry === "string" && entry.trim())) {
       throw new Error("invalid checkpoint item text");
     }
@@ -378,6 +382,20 @@ function validateCheckpointAnalysis(value, messages, workDate) {
   }
   if (classifiedMessageIds.size !== knownMessageIds.size) throw new Error("missing checkpoint message classification");
   return downgradedInterrupt;
+}
+
+function validateCheckpointEvidence(item, messagesById) {
+  const evidence = item.evidence;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)
+    || Object.keys(evidence).some((field) => !["messageIds", "text", "links"].includes(field))
+    || !Array.isArray(evidence.messageIds) || evidence.messageIds.length < 1
+    || evidence.messageIds.some((id) => !item.messageIds.includes(id))
+    || typeof evidence.text !== "string"
+    || !Array.isArray(evidence.links) || evidence.links.some((link) => typeof link !== "string")) {
+    throw new Error("invalid checkpoint evidence");
+  }
+  const source = evidence.messageIds.map((id) => originalMessageText(messagesById.get(id))).join("\n");
+  if (evidence.links.some((link) => !source.includes(link))) throw new Error("checkpoint evidence link is not grounded in source");
 }
 
 function fallbackCheckpointAnalysis(messages, error) {

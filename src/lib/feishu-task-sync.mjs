@@ -17,7 +17,7 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
       for (const block of schedule?.blocks || []) {
         const localTask = tasks.findById(block.taskId);
         if (!localTask) continue;
-        const parentFields = managedFields(localTask, -1, localTask.title, localTask.description, block.startsAt, block.endsAt);
+        const parentFields = managedFields(localTask, -1, localTask.title, localTask.description, block.startsAt, block.endsAt, localTask.status === "done");
         const parent = await ensureRemote({
           localTask,
           checkpointIndex: -1,
@@ -27,7 +27,7 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
         });
         const remoteChildren = await api.listSubtasks(config, parent.taskGuid);
         for (const [checkpointIndex, checkpoint] of (localTask.checkpoints || []).entries()) {
-          const childFields = managedFields(localTask, checkpointIndex, checkpoint.title, "", null, block.endsAt);
+          const childFields = managedFields(localTask, checkpointIndex, checkpoint.title, "", null, block.endsAt, checkpoint.completed);
           await ensureRemote({
             localTask,
             checkpointIndex,
@@ -76,7 +76,9 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
     const snapshotHash = hash(fields);
     const existing = links.findFeishuLink(localTask.id, checkpointIndex);
     if (!existing) {
-      const remote = remoteTasks.find((task) => (task.client_token || task.clientToken) === fields.clientToken);
+      const remote = remoteTasks.find((task) =>
+        (task.client_token || task.clientToken) === fields.clientToken
+        || String(task.description || "").includes(fields.managedMarker));
       if (remote?.guid) {
         await api.updateTask(config, remote.guid, fields);
         return links.upsertFeishuLink({
@@ -102,14 +104,21 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
   }
 }
 
-function managedFields(localTask, checkpointIndex, summary, description, startAt, dueAt) {
+function managedFields(localTask, checkpointIndex, summary, description, startAt, dueAt, completed) {
+  const managedMarker = `[nge-managed:${stableMarker(localTask.id, checkpointIndex)}]`;
   return {
     summary,
-    description: description || "",
+    description: [description || "", managedMarker].filter(Boolean).join("\n"),
+    managedMarker,
     clientToken: stableClientToken(localTask.id, checkpointIndex),
     ...(startAt ? { startAt } : {}),
     ...(dueAt ? { dueAt } : {}),
+    ...(completed ? { completedAt: localTask.completedAt || localTask.updatedAt || "1970-01-01T00:00:00.000Z" } : {}),
   };
+}
+
+function stableMarker(localTaskId, checkpointIndex) {
+  return createHash("sha256").update(`${localTaskId}:${checkpointIndex}`).digest("hex").slice(0, 32);
 }
 
 function stableClientToken(localTaskId, checkpointIndex) {

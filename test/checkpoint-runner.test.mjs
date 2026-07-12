@@ -49,6 +49,14 @@ test("dry run performs no writes", async () => {
   assert.equal(fixture.outbox.length, 0);
 });
 
+test("reconciles stranded project writes once before node processing", async () => {
+  let reconciliations = 0;
+  const fixture = runnerFixture({ reconcileProjectWrites: async () => { reconciliations += 1; } });
+  await fixture.runner.run({ now: "2026-07-13T09:00:00+08:00", forcedNode: "09:00" });
+  assert.equal(reconciliations, 1);
+  assert.ok(fixture.calls.indexOf("reconcile-projects") < fixture.calls.indexOf("claim"));
+});
+
 test("refuses to queue a private summary without the owner open_id", async () => {
   const fixture = runnerFixture({ messages: [message("om-1", "新增任务")], managerUserId: "" });
   await assert.rejects(() => fixture.runner.run({ now: "2026-07-13T09:00:00+08:00", forcedNode: "09:00" }), /owner open_id/);
@@ -110,6 +118,15 @@ test("CLI dry-run does not create or migrate the configured database", () => {
   });
   assert.equal(fs.existsSync(dbPath), false);
   assert.equal(result.stdout.trim().split("\n").length, 1);
+});
+
+test("CLI dry-run rejects a misspelled checkpoint node", () => {
+  const result = spawnSync(process.execPath, ["scripts/run-checkpoint.mjs", "--dry-run", "--node=09:O0"], {
+    cwd: path.resolve(import.meta.dirname, ".."), encoding: "utf8",
+    env: { ...process.env, FEISHU_P2P_CHAT_ID: "oc-direct", FEISHU_APP_ID: "", FEISHU_APP_SECRET: "" },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /unsupported checkpoint node/);
 });
 
 test("CLI JSON never exposes a bare bearer credential", () => {
@@ -184,7 +201,7 @@ test("pre-recorded pending messages remain isolated by each catch-up cutoff", as
   assert.deepEqual(fixture.finalizedThrough, ["2026-07-12T16:00:00.000Z", "2026-07-13T00:00:00.000Z", "2026-07-13T01:00:00.000Z"]);
 });
 
-function runnerFixture({ messages = [], pendingMessages = [], pollMessages, completedNodes = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, buildAnalysisContext, analyze, executionNow, onClaimLock } = {}) {
+function runnerFixture({ messages = [], pendingMessages = [], pollMessages, completedNodes = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, reconcileProjectWrites, buildAnalysisContext, analyze, executionNow, onClaimLock } = {}) {
   const calls = [];
   const claims = [];
   const polls = [];
@@ -231,6 +248,7 @@ function runnerFixture({ messages = [], pendingMessages = [], pollMessages, comp
     owner: () => "runner-1",
     clock: executionNow ? { now: () => executionNow } : undefined,
     buildAnalysisContext,
+    reconcileProjectWrites: reconcileProjectWrites ? async () => { calls.push("reconcile-projects"); return reconcileProjectWrites(); } : undefined,
   };
   let runner = createCheckpointRunner(deps);
   return {
