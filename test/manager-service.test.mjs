@@ -115,7 +115,7 @@ test("12:00 policy puts a new today disposition into the real capacity-limited s
 
   const result = await policy.apply({
     node: "12:00", workDate: "2026-07-10", messages: [{ messageId: "om-real-12" }],
-    remoteProgress: { completedParents: [], completedCheckpoints: [] },
+    remoteProgress: { completedTasks: [], completedCheckpoints: [] },
     analysis: { items: [{
       disposition: "schedule_today", title: "真实午间排程", estimateMinutes: 30,
       checkpoints: [{ title: "导出午间脚本", minutes: 30 }],
@@ -135,7 +135,7 @@ test("15:00 policy preserves real doing work and schedules the new today task", 
 
   const result = await policy.apply({
     node: "15:00", workDate: "2026-07-10", messages: [{ messageId: "om-real-15" }],
-    remoteProgress: { completedParents: [], completedCheckpoints: [] },
+    remoteProgress: { completedTasks: [], completedCheckpoints: [] },
     analysis: { items: [{
       disposition: "schedule_today", title: "真实下午排程", estimateMinutes: 30,
       checkpoints: [{ title: "导出下午交付", minutes: 30 }],
@@ -179,6 +179,54 @@ test("silent checkpoint completion queues no standalone status", async () => {
 
   assert.equal(tasks.findById("silent-child").checkpoints[0].completed, true);
   assert.equal(ops.listOutbox().some((row) => row.kind === "status_message"), false);
+  db.close();
+});
+
+test("checkpoint policy consumes pulled parent progress and routes evidence tasks to pending acceptance", async () => {
+  const { db, tasks, ops, manager } = setup();
+  tasks.create({ id: "pulled-deliverable", rawInput: "发布交付", status: "doing", requiresEvidence: true });
+  const policy = createCheckpointPolicy({ manager, tasks });
+
+  const result = await policy.apply({
+    node: "12:00",
+    workDate: "2026-07-10",
+    messages: [],
+    analysis: { items: [] },
+    remoteProgress: {
+      completedTasks: [{ localTaskId: "pulled-deliverable", completedAt: "2026-07-10T03:00:00.000Z" }],
+      completedCheckpoints: [],
+    },
+  });
+
+  assert.equal(tasks.findById("pulled-deliverable").status, "pending_acceptance");
+  assert.equal(result.actions.some((action) => action.type === "parent_completed"), true);
+  assert.equal(ops.findEventByIdempotencyKey("feishu-parent:pulled-deliverable:2026-07-10T03:00:00.000Z").kind, "acceptance_requested");
+  db.close();
+});
+
+test("checkpoint policy gives same-time pulled checkpoint completions distinct idempotency keys", async () => {
+  const { db, tasks, ops, manager } = setup();
+  tasks.create({ id: "pulled-checkpoints", rawInput: "拍摄交付", status: "doing", checkpoints: ["写脚本", "拍素材"] });
+  const policy = createCheckpointPolicy({ manager, tasks });
+  const completedAt = "2026-07-10T03:00:00.000Z";
+
+  await policy.apply({
+    node: "12:00",
+    workDate: "2026-07-10",
+    messages: [],
+    analysis: { items: [] },
+    remoteProgress: {
+      completedTasks: [],
+      completedCheckpoints: [
+        { localTaskId: "pulled-checkpoints", checkpointIndex: 0, completedAt },
+        { localTaskId: "pulled-checkpoints", checkpointIndex: 1, completedAt },
+      ],
+    },
+  });
+
+  assert.deepEqual(tasks.findById("pulled-checkpoints").checkpoints.map((checkpoint) => checkpoint.completed), [true, true]);
+  assert.equal(ops.findEventByIdempotencyKey(`feishu-checkpoint:pulled-checkpoints:0:${completedAt}`).kind, "checkpoint_completed");
+  assert.equal(ops.findEventByIdempotencyKey(`feishu-checkpoint:pulled-checkpoints:1:${completedAt}`).kind, "checkpoint_completed");
   db.close();
 });
 

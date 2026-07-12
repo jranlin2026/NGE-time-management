@@ -55,7 +55,7 @@ async function applyRemoteProgress(state, deps) {
       action: "complete_checkpoint",
       taskId: change.localTaskId,
       checkpointIndex: change.checkpointIndex,
-      idempotencyKey: `feishu-checkpoint:${change.taskGuid}:${change.completedAt}`,
+      idempotencyKey: `feishu-checkpoint:${change.localTaskId}:${change.checkpointIndex}:${change.completedAt}`,
       deliveryMode: "task_dm",
       suppressOutbox: true,
     });
@@ -63,11 +63,11 @@ async function applyRemoteProgress(state, deps) {
     state.replyParts.push(`已同步完成关卡：${task?.checkpoints?.[change.checkpointIndex]?.title || change.localTaskId}`);
     state.changed = true;
   }
-  for (const change of state.remoteProgress.completedParents || []) {
+  for (const change of state.remoteProgress.completedTasks || []) {
     const result = await deps.manager.handleAction({
       action: "complete",
       taskId: change.localTaskId,
-      idempotencyKey: `feishu-parent:${change.taskGuid}:${change.completedAt}`,
+      idempotencyKey: `feishu-parent:${change.localTaskId}:${change.completedAt}`,
       deliveryMode: "task_dm",
       suppressOutbox: true,
     });
@@ -230,7 +230,7 @@ function activeForProgress(tasks) {
 }
 
 function hasProgress(tasks, remoteProgress) {
-  return (remoteProgress.completedParents || []).length > 0
+  return (remoteProgress.completedTasks || []).length > 0
     || (remoteProgress.completedCheckpoints || []).length > 0
     || tasks.some((task) => task.status === "pending_acceptance" || task.checkpoints?.some((checkpoint) => checkpoint.completed));
 }

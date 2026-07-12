@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createCheckpointPolicy } from "../src/lib/checkpoint-policy.mjs";
 
-const emptyProgress = { completedParents: [], completedCheckpoints: [] };
+const emptyProgress = { completedTasks: [], completedCheckpoints: [] };
 
 function task(overrides = {}) {
   return {
@@ -137,11 +137,11 @@ test("15:00 replans a new task even while preserving a doing task", async () => 
 test("remote parent completion is routed through manager acceptance handling first", async () => {
   const fixture = policyFixture({ scheduledTask: task({ id: "deliverable", requiresEvidence: true }), handleActionResult: { action: "evidence_required" } });
   const result = await fixture.policy.apply({ node: "12:00", workDate: "2026-07-13", messages: [], analysis: { items: [] }, remoteProgress: {
-    completedParents: [{ localTaskId: "deliverable", taskGuid: "ft-1", completedAt: "2026-07-13T03:00:00.000Z" }],
+    completedTasks: [{ localTaskId: "deliverable", completedAt: "2026-07-13T03:00:00.000Z" }],
     completedCheckpoints: [],
   } });
   assert.deepEqual(fixture.handled[0], {
-    action: "complete", taskId: "deliverable", idempotencyKey: "feishu-parent:ft-1:2026-07-13T03:00:00.000Z", deliveryMode: "task_dm", suppressOutbox: true,
+    action: "complete", taskId: "deliverable", idempotencyKey: "feishu-parent:deliverable:2026-07-13T03:00:00.000Z", deliveryMode: "task_dm", suppressOutbox: true,
   });
   assert.equal(result.replyRequired, true);
   assert.match(result.reply, /已同步主任务完成.*验收证据/);

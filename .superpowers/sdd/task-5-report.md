@@ -59,3 +59,12 @@ Commit: `2f3df03 fix: harden checkpoint policy execution`
 - TDD RED: the two silent-mode tests failed because `disambiguation_card` and `status_message` rows were still enqueued.
 - Focused GREEN: 4 passed, 0 failed for silent and normal early-return behavior; complete manager-service coverage passed 18/18.
 - Full verification: 299 passed, 0 failed. The existing experimental SQLite warning remains non-failing.
+
+## Task 3 Remote-Progress Integration Fix
+
+- Checkpoint policy now consumes the synchronizer's published `completedTasks` and `completedCheckpoints` shape; the obsolete `completedParents` name is no longer used.
+- Parent idempotency keys use `localTaskId + completedAt`; checkpoint keys use `localTaskId + checkpointIndex + completedAt`, so records do not depend on absent remote GUIDs and same-time checkpoint completions cannot collide.
+- Integration RED: a pulled parent completion left an evidence-gated task in `doing`, and two same-time checkpoint completions only completed the first checkpoint because both generated the same key.
+- Integration GREEN proves a pulled parent completion reaches `pending_acceptance` and two same-time checkpoint completions persist two distinct `checkpoint_completed` events.
+- Focused synchronization/policy/manager verification: 37 passed, 0 failed.
+- Full verification: 301 passed, 0 failed. The existing experimental SQLite warning remains non-failing.
