@@ -131,6 +131,47 @@ test("preserves checkpoint minutes from checkpoint analysis", () => {
   db.close();
 });
 
+test("preserves timed checkpoint details through create, read, and update", () => {
+  const { db, tasks } = setup();
+  const checkpoint = {
+    title: "确定3个选题",
+    minutes: 20,
+    startsAt: "2026-07-13T02:15:00.000Z",
+    endsAt: "2026-07-13T02:35:00.000Z",
+    doneDefinition: "3个选题和钩子已确认",
+    feedback: "在飞书勾选并附选题清单",
+  };
+  const created = tasks.create({
+    id: "detailed-checkpoint",
+    rawInput: "完成选题确认",
+    checkpoints: [checkpoint],
+  });
+  const expected = { ...checkpoint, completed: false };
+
+  assert.deepEqual(created.checkpoints, [expected]);
+  assert.deepEqual(tasks.findById(created.id).checkpoints, [expected]);
+
+  const updated = tasks.update(created.id, {
+    checkpoints: [{ ...created.checkpoints[0], completed: true }],
+  });
+  assert.deepEqual(updated.checkpoints, [{ ...checkpoint, completed: true }]);
+  assert.deepEqual(tasks.findById(created.id).checkpoints, [{ ...checkpoint, completed: true }]);
+  db.close();
+});
+
+test("reads legacy checkpoint JSON", () => {
+  const { db, tasks } = setup();
+  const task = tasks.create({ id: "legacy-checkpoint-json", rawInput: "继续旧任务" });
+  db.prepare("UPDATE tasks SET checkpoints_json = ? WHERE id = ?")
+    .run(JSON.stringify(["旧字符串关卡", { title: "旧对象关卡", completed: true }]), task.id);
+
+  assert.deepEqual(tasks.findById(task.id).checkpoints, [
+    { title: "旧字符串关卡", completed: false },
+    { title: "旧对象关卡", completed: true },
+  ]);
+  db.close();
+});
+
 test("replaces schedules by version without deleting history", () => {
   const { db, tasks, ops } = setup();
   tasks.create({ id: "task-1", rawInput: "拍视频" });
@@ -140,12 +181,26 @@ test("replaces schedules by version without deleting history", () => {
   });
   const second = ops.replaceSchedule({
     date: "2026-07-10",
-    blocks: [{ taskId: "task-1", startsAt: "2026-07-10T02:30:00.000Z", endsAt: "2026-07-10T04:30:00.000Z", reason: "延迟30分钟" }],
+    blocks: [{ taskId: "task-1", checkpointIndex: 1, startsAt: "2026-07-10T02:30:00.000Z", endsAt: "2026-07-10T04:30:00.000Z", reason: "延迟30分钟" }],
   });
 
   assert.equal(first.version, 1);
+  assert.equal(first.blocks[0].checkpointIndex, null);
   assert.equal(second.version, 2);
-  assert.equal(ops.currentSchedule("2026-07-10")[0].startsAt, "2026-07-10T02:30:00.000Z");
+  assert.deepEqual(
+    (({ taskId, checkpointIndex, startsAt, endsAt, status, reason }) => (
+      { taskId, checkpointIndex, startsAt, endsAt, status, reason }
+    ))(ops.currentSchedule("2026-07-10")[0]),
+    {
+      taskId: "task-1",
+      checkpointIndex: 1,
+      startsAt: "2026-07-10T02:30:00.000Z",
+      endsAt: "2026-07-10T04:30:00.000Z",
+      status: "planned",
+      reason: "延迟30分钟",
+    },
+  );
+  assert.deepEqual(ops.listScheduleHistory("2026-07-10").map((block) => block.checkpointIndex), [null, 1]);
   assert.equal(db.prepare("SELECT count(*) AS count FROM schedule_blocks").get().count, 2);
   db.close();
 });

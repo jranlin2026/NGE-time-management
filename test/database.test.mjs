@@ -78,6 +78,11 @@ test("upgrades a version-two database without losing tasks and applies new defau
       source_message_id TEXT UNIQUE, analysis_status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL, checkpoints_json TEXT NOT NULL DEFAULT '[]'
     );
+    CREATE TABLE schedule_blocks (
+      id TEXT PRIMARY KEY, schedule_date TEXT NOT NULL, version INTEGER NOT NULL, task_id TEXT NOT NULL,
+      starts_at TEXT NOT NULL, ends_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'planned', reason TEXT NOT NULL,
+      replaced_by_version INTEGER, created_at TEXT NOT NULL, FOREIGN KEY(task_id) REFERENCES tasks(id)
+    );
     INSERT INTO tasks
       (id,title,project,raw_input,next_action,done_definition,created_at,updated_at)
       VALUES ('legacy-task','保留旧任务','个人IP','旧输入','下一步','完成定义','2026-07-01','2026-07-02');
@@ -122,5 +127,44 @@ test("migration five persists checkpoint batch analysis", () => {
   const runColumns = db.prepare("PRAGMA table_info(automation_runs)").all().map((row) => row.name);
   assert.ok(runColumns.includes("analysis_json"));
   assert.ok(db.prepare("SELECT 1 FROM schema_migrations WHERE version = 5").get());
+  db.close();
+});
+
+test("migration six adds checkpoint identity to schedule blocks", () => {
+  const db = openDatabase(":memory:");
+  const columns = db.prepare("PRAGMA table_info(schedule_blocks)").all().map((row) => row.name);
+  assert.ok(columns.includes("checkpoint_index"));
+  assert.ok(db.prepare("SELECT 1 FROM schema_migrations WHERE version = 6").get());
+  db.close();
+});
+
+test("migration six preserves legacy schedule blocks with null checkpoint identity", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "time-manager-v5-"));
+  const file = path.join(dir, "manager.sqlite");
+  const legacy = new DatabaseSync(file);
+  legacy.exec(`
+    CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+    INSERT INTO schema_migrations VALUES
+      (1, '2026-07-01T00:00:00.000Z'),
+      (2, '2026-07-02T00:00:00.000Z'),
+      (3, '2026-07-03T00:00:00.000Z'),
+      (4, '2026-07-04T00:00:00.000Z'),
+      (5, '2026-07-05T00:00:00.000Z');
+    CREATE TABLE schedule_blocks (
+      id TEXT PRIMARY KEY, schedule_date TEXT NOT NULL, version INTEGER NOT NULL, task_id TEXT NOT NULL,
+      starts_at TEXT NOT NULL, ends_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'planned', reason TEXT NOT NULL,
+      replaced_by_version INTEGER, created_at TEXT NOT NULL
+    );
+    INSERT INTO schedule_blocks
+      (id,schedule_date,version,task_id,starts_at,ends_at,status,reason,created_at)
+      VALUES ('legacy-block','2026-07-13',1,'legacy-task','2026-07-13T02:00:00.000Z',
+        '2026-07-13T02:30:00.000Z','planned','legacy','2026-07-12T00:00:00.000Z');
+  `);
+  legacy.close();
+
+  const db = openDatabase(file);
+  const block = db.prepare("SELECT * FROM schedule_blocks WHERE id = 'legacy-block'").get();
+  assert.equal(block.checkpoint_index, null);
+  assert.ok(db.prepare("SELECT 1 FROM schema_migrations WHERE version = 6").get());
   db.close();
 });

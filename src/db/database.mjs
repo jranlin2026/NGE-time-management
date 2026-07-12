@@ -100,11 +100,16 @@ const MIGRATION_5 = `
 ALTER TABLE automation_runs ADD COLUMN analysis_json TEXT;
 `;
 
+const MIGRATION_6 = `
+ALTER TABLE schedule_blocks ADD COLUMN checkpoint_index INTEGER;
+CREATE INDEX idx_blocks_checkpoint ON schedule_blocks(schedule_date, task_id, checkpoint_index);
+`;
+
 export function openDatabase(filePath) {
   if (filePath !== ":memory:") fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const db = new DatabaseSync(filePath);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-  const migrations = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5];
+  const migrations = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6];
   for (let index = 0; index < migrations.length; index += 1) {
     const version = index + 1;
     const hasMigrations = db

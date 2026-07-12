@@ -198,6 +198,10 @@ function normalizeCheckpoints(checkpoints) {
       : {
           title: clean(checkpoint?.title),
           ...(Number.isInteger(checkpoint?.minutes) ? { minutes: checkpoint.minutes } : {}),
+          ...(checkpoint?.startsAt ? { startsAt: String(checkpoint.startsAt) } : {}),
+          ...(checkpoint?.endsAt ? { endsAt: String(checkpoint.endsAt) } : {}),
+          ...(checkpoint?.doneDefinition ? { doneDefinition: clean(checkpoint.doneDefinition) } : {}),
+          ...(checkpoint?.feedback ? { feedback: clean(checkpoint.feedback) } : {}),
           completed: Boolean(checkpoint?.completed),
         })
     .filter((checkpoint) => checkpoint.title)

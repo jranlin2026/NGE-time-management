@@ -50,11 +50,11 @@ export function createOperationsRepository(db, deps = {}) {
         db.prepare(`UPDATE schedule_blocks SET replaced_by_version = ?
           WHERE schedule_date = ? AND replaced_by_version IS NULL`).run(version, date);
         const insert = db.prepare(`INSERT INTO schedule_blocks
-          (id,schedule_date,version,task_id,starts_at,ends_at,status,reason,created_at)
-          VALUES (?,?,?,?,?,?,?,?,?)`);
+          (id,schedule_date,version,task_id,checkpoint_index,starts_at,ends_at,status,reason,created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?)`);
         for (const block of blocks) {
           insert.run(
-            id(), date, version, block.taskId, block.startsAt, block.endsAt,
+            id(), date, version, block.taskId, block.checkpointIndex ?? null, block.startsAt, block.endsAt,
             block.status || "planned", block.reason, now(),
           );
         }
@@ -191,6 +191,7 @@ function mapBlock(row) {
     date: row.schedule_date,
     version: row.version,
     taskId: row.task_id,
+    checkpointIndex: row.checkpoint_index,
     startsAt: row.starts_at,
     endsAt: row.ends_at,
     status: row.status,
