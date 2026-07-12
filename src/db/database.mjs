@@ -71,7 +71,7 @@ CREATE TABLE project_sync_state (
 const MIGRATION_4 = `
 CREATE TABLE automation_runs (
   run_key TEXT PRIMARY KEY, work_date TEXT NOT NULL, node TEXT NOT NULL,
-  status TEXT NOT NULL, started_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+  status TEXT NOT NULL, started_at TEXT NOT NULL, expires_at TEXT NOT NULL, claim_token TEXT NOT NULL,
   completed_at TEXT, error TEXT, summary_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE automation_locks (

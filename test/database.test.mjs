@@ -99,6 +99,7 @@ test("upgrades a version-two database without losing tasks and applies new defau
 
 test("migration four adds automation runtime tables and indexes", () => {
   const db = openDatabase(":memory:");
+  const runColumns = db.prepare("PRAGMA table_info(automation_runs)").all().map((row) => row.name);
   for (const table of [
     "automation_runs",
     "automation_locks",
@@ -111,6 +112,7 @@ test("migration four adds automation runtime tables and indexes", () => {
       `missing table ${table}`,
     );
   }
+  assert.ok(runColumns.includes("claim_token"), "missing automation run fencing token");
   assert.ok(db.prepare("SELECT 1 FROM schema_migrations WHERE version = 4").get());
   db.close();
 });

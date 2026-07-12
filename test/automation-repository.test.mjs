@@ -28,8 +28,14 @@ test("does not process one inbound message twice", () => {
   repo.recordInbound([message, message]);
   assert.deepEqual(repo.listPendingInbound("oc-p2p").map((item) => item.messageId), ["om-1"]);
   repo.claimRun({ runKey: "2026-07-13:09:00", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" });
-  repo.markInboundProcessed(["om-1"], "2026-07-13:09:00");
+  repo.finalizeInbound({
+    chatId: "oc-p2p",
+    messageIds: ["om-1"],
+    runKey: "2026-07-13:09:00",
+    polledThrough: "2026-07-13T01:00:00.000Z",
+  });
   assert.deepEqual(repo.listPendingInbound("oc-p2p"), []);
+  assert.equal(repo.getMessageCursor("oc-p2p").polledThrough, "2026-07-13T01:00:00.000Z");
   db.close();
 });
 
@@ -45,12 +51,20 @@ test("maps parent and checkpoint GUIDs independently", () => {
   db.close();
 });
 
-test("advances one chat cursor only after successful finalization", () => {
+test("rolls back message processing without advancing the cursor when finalization fails", () => {
   const db = openDatabase(":memory:");
   const repo = createAutomationRepository(db, { now: () => "2026-07-13T01:00:00.000Z" });
+  const message = { messageId: "om-1", chatId: "oc-p2p", senderId: "ou-owner", messageType: "text", content: { text: "新增选题" }, createdAt: "2026-07-13T00:30:00.000Z" };
+  repo.recordInbound([message]);
   assert.equal(repo.getMessageCursor("oc-p2p"), null);
-  repo.advanceMessageCursor("oc-p2p", "2026-07-13T01:00:00.000Z");
-  assert.equal(repo.getMessageCursor("oc-p2p").polledThrough, "2026-07-13T01:00:00.000Z");
+  assert.throws(() => repo.finalizeInbound({
+    chatId: "oc-p2p",
+    messageIds: ["om-1"],
+    runKey: "missing-run",
+    polledThrough: "2026-07-13T01:00:00.000Z",
+  }), /FOREIGN KEY/);
+  assert.deepEqual(repo.listPendingInbound("oc-p2p").map((item) => item.messageId), ["om-1"]);
+  assert.equal(repo.getMessageCursor("oc-p2p"), null);
   db.close();
 });
 
@@ -59,11 +73,13 @@ test("completed runs cannot be reclaimed while failed and expired runs can resum
   const clock = { value: "2026-07-13T01:00:00.000Z" };
   const repo = createAutomationRepository(db, { now: () => clock.value });
   const input = { runKey: "run-1", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" };
-  assert.equal(repo.claimRun(input).claimed, true);
+  const firstClaim = repo.claimRun(input);
+  assert.equal(firstClaim.claimed, true);
   assert.equal(repo.claimRun(input).claimed, false);
-  repo.failRun("run-1", "x".repeat(600));
-  assert.equal(repo.claimRun(input).claimed, true);
-  repo.completeRun("run-1", { processed: 1 });
+  repo.failRun("run-1", firstClaim.claimToken, "x".repeat(600));
+  const resumedClaim = repo.claimRun(input);
+  assert.equal(resumedClaim.claimed, true);
+  repo.completeRun("run-1", resumedClaim.claimToken, { processed: 1 });
   assert.equal(repo.claimRun(input).claimed, false);
   assert.equal(db.prepare("SELECT length(error) AS size FROM automation_runs WHERE run_key='run-1'").get().size, null);
 
@@ -77,8 +93,29 @@ test("completed runs cannot be reclaimed while failed and expired runs can resum
 test("sanitizes stored run errors to 500 characters", () => {
   const db = openDatabase(":memory:");
   const repo = createAutomationRepository(db, { now: () => "2026-07-13T01:00:00.000Z" });
-  repo.claimRun({ runKey: "run-1", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" });
-  repo.failRun("run-1", new Error("x".repeat(600)));
+  const claim = repo.claimRun({ runKey: "run-1", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" });
+  repo.failRun("run-1", claim.claimToken, new Error("x".repeat(600)));
   assert.equal(db.prepare("SELECT length(error) AS size FROM automation_runs WHERE run_key='run-1'").get().size, 500);
+  db.close();
+});
+
+test("rejects stale workers after an expired run is reclaimed", () => {
+  const db = openDatabase(":memory:");
+  const clock = { value: "2026-07-13T01:00:00.000Z" };
+  let sequence = 0;
+  const repo = createAutomationRepository(db, {
+    now: () => clock.value,
+    claimToken: () => `claim-${++sequence}`,
+  });
+  const input = { runKey: "run-1", workDate: "2026-07-13", node: "09:00", expiresAt: "2026-07-13T01:05:00.000Z" };
+  const stale = repo.claimRun(input);
+  clock.value = "2026-07-13T01:06:00.000Z";
+  const current = repo.claimRun({ ...input, expiresAt: "2026-07-13T01:11:00.000Z" });
+  assert.notEqual(stale.claimToken, current.claimToken);
+  assert.equal(repo.completeRun("run-1", stale.claimToken, { stale: true }), null);
+  assert.equal(repo.failRun("run-1", stale.claimToken, "stale failure"), null);
+  const completed = repo.completeRun("run-1", current.claimToken, { stale: false });
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(completed.summary, { stale: false });
   db.close();
 });

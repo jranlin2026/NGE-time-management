@@ -1,4 +1,5 @@
 import { withTransaction } from "./database.mjs";
+import { randomUUID } from "node:crypto";
 
 const LOCK_NAME = "global-runner";
 
@@ -11,6 +12,7 @@ function mapRun(row) {
     status: row.status,
     startedAt: row.started_at,
     expiresAt: row.expires_at,
+    claimToken: row.claim_token,
     completedAt: row.completed_at,
     error: row.error,
     summary: JSON.parse(row.summary_json),
@@ -54,6 +56,7 @@ function sanitizeError(error) {
 
 export function createAutomationRepository(db, deps = {}) {
   const now = deps.now || (() => new Date().toISOString());
+  const newClaimToken = deps.claimToken || randomUUID;
 
   return {
     claimLock({ owner, expiresAt }) {
@@ -79,33 +82,39 @@ export function createAutomationRepository(db, deps = {}) {
         const timestamp = now();
         const existing = db.prepare("SELECT * FROM automation_runs WHERE run_key=?").get(runKey);
         if (!existing) {
+          const claimToken = newClaimToken();
           db.prepare(`INSERT INTO automation_runs
-            (run_key,work_date,node,status,started_at,expires_at,completed_at,error,summary_json)
-            VALUES (?,?,?,'running',?,?,NULL,NULL,'{}')`).run(runKey, workDate, node, timestamp, expiresAt);
-          return { claimed: true, run: mapRun(db.prepare("SELECT * FROM automation_runs WHERE run_key=?").get(runKey)) };
+            (run_key,work_date,node,status,started_at,expires_at,claim_token,completed_at,error,summary_json)
+            VALUES (?,?,?,'running',?,?,?,NULL,NULL,'{}')`).run(runKey, workDate, node, timestamp, expiresAt, claimToken);
+          return { claimed: true, claimToken, run: mapRun(db.prepare("SELECT * FROM automation_runs WHERE run_key=?").get(runKey)) };
         }
         if (existing.status === "completed" || (existing.status === "running" && existing.expires_at > timestamp)) {
           return { claimed: false, run: mapRun(existing) };
         }
-        db.prepare(`UPDATE automation_runs SET work_date=?, node=?, status='running', started_at=?, expires_at=?,
+        const claimToken = newClaimToken();
+        db.prepare(`UPDATE automation_runs SET work_date=?, node=?, status='running', started_at=?, expires_at=?, claim_token=?,
           completed_at=NULL, error=NULL, summary_json='{}' WHERE run_key=?`)
-          .run(workDate, node, timestamp, expiresAt, runKey);
-        return { claimed: true, run: mapRun(db.prepare("SELECT * FROM automation_runs WHERE run_key=?").get(runKey)) };
+          .run(workDate, node, timestamp, expiresAt, claimToken, runKey);
+        return { claimed: true, claimToken, run: mapRun(db.prepare("SELECT * FROM automation_runs WHERE run_key=?").get(runKey)) };
       });
     },
 
-    completeRun(runKey, summary) {
+    completeRun(runKey, claimToken, summary) {
       return withTransaction(db, () => {
-        db.prepare(`UPDATE automation_runs SET status='completed', completed_at=?, error=NULL, summary_json=?
-          WHERE run_key=?`).run(now(), JSON.stringify(summary ?? {}), runKey);
+        const result = db.prepare(`UPDATE automation_runs SET status='completed', completed_at=?, error=NULL, summary_json=?
+          WHERE run_key=? AND claim_token=? AND status='running'`)
+          .run(now(), JSON.stringify(summary ?? {}), runKey, claimToken);
+        if (result.changes === 0) return null;
         return mapRun(db.prepare("SELECT * FROM automation_runs WHERE run_key=?").get(runKey));
       });
     },
 
-    failRun(runKey, error) {
+    failRun(runKey, claimToken, error) {
       return withTransaction(db, () => {
-        db.prepare("UPDATE automation_runs SET status='failed', completed_at=?, error=? WHERE run_key=?")
-          .run(now(), sanitizeError(error), runKey);
+        const result = db.prepare(`UPDATE automation_runs SET status='failed', completed_at=?, error=?
+          WHERE run_key=? AND claim_token=? AND status='running'`)
+          .run(now(), sanitizeError(error), runKey, claimToken);
+        if (result.changes === 0) return null;
         return mapRun(db.prepare("SELECT * FROM automation_runs WHERE run_key=?").get(runKey));
       });
     },
@@ -129,21 +138,22 @@ export function createAutomationRepository(db, deps = {}) {
         ORDER BY created_at, message_id`).all(chatId).map(mapInbound);
     },
 
-    markInboundProcessed(messageIds, runKey) {
-      return withTransaction(db, () => {
-        if (messageIds.length === 0) return 0;
-        const placeholders = messageIds.map(() => "?").join(",");
-        return db.prepare(`UPDATE inbound_messages SET processed_run_key=?
-          WHERE processed_run_key IS NULL AND message_id IN (${placeholders})`).run(runKey, ...messageIds).changes;
-      });
-    },
-
     getMessageCursor(chatId) {
       return mapCursor(db.prepare("SELECT * FROM message_cursors WHERE chat_id=?").get(chatId));
     },
 
-    advanceMessageCursor(chatId, polledThrough) {
+    finalizeInbound({ chatId, messageIds, runKey, polledThrough }) {
       return withTransaction(db, () => {
+        const uniqueMessageIds = [...new Set(messageIds)];
+        if (uniqueMessageIds.length > 0) {
+          const placeholders = uniqueMessageIds.map(() => "?").join(",");
+          const result = db.prepare(`UPDATE inbound_messages SET processed_run_key=?
+            WHERE chat_id=? AND processed_run_key IS NULL AND message_id IN (${placeholders})`)
+            .run(runKey, chatId, ...uniqueMessageIds);
+          if (result.changes !== uniqueMessageIds.length) {
+            throw new Error("could not process every pending inbound message");
+          }
+        }
         const timestamp = now();
         db.prepare(`INSERT INTO message_cursors(chat_id,polled_through,updated_at) VALUES (?,?,?)
           ON CONFLICT(chat_id) DO UPDATE SET polled_through=excluded.polled_through, updated_at=excluded.updated_at
