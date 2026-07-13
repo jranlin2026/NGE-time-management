@@ -77,6 +77,7 @@ async function applyRemoteProgress(state, deps) {
       action: "complete_checkpoint",
       taskId: change.localTaskId,
       checkpointIndex: change.checkpointIndex,
+      date: state.workDate,
       idempotencyKey: `feishu-checkpoint:${change.taskGuid || `${change.localTaskId}:${change.checkpointIndex}`}:${change.completedAt}`,
       deliveryMode: "task_dm",
       suppressOutbox: true,

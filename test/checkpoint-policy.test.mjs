@@ -326,6 +326,39 @@ test("remote parent completion is routed through manager acceptance handling fir
   assert.match(result.reply, /已同步主任务完成.*验收证据/);
 });
 
+test("24:00 checkpoint completion replans the prior work date", async () => {
+  const completedAt = "2026-07-13T16:00:00.000Z";
+  const fixture = policyFixture({
+    scheduledTask: task({ id: "prior-day-task" }),
+    handleActionResult: { action: "complete_checkpoint", schedule: { date: "2026-07-13", blocks: [] } },
+  });
+
+  await fixture.policy.apply({
+    node: "24:00",
+    workDate: "2026-07-13",
+    messages: [],
+    analysis: { items: [] },
+    remoteProgress: {
+      completedTasks: [],
+      completedCheckpoints: [{
+        localTaskId: "prior-day-task",
+        checkpointIndex: 0,
+        completedAt,
+      }],
+    },
+  });
+
+  assert.deepEqual(fixture.handled[0], {
+    action: "complete_checkpoint",
+    taskId: "prior-day-task",
+    checkpointIndex: 0,
+    date: "2026-07-13",
+    idempotencyKey: `feishu-checkpoint:prior-day-task:0:${completedAt}`,
+    deliveryMode: "task_dm",
+    suppressOutbox: true,
+  });
+});
+
 test("all seven node handlers return a single decision envelope", async () => {
   for (const node of ["08:00", "09:00", "12:00", "15:00", "18:00", "21:00", "24:00"]) {
     const result = await policyFixture().policy.apply({ node, workDate: "2026-07-13", messages: [], analysis: { items: [] }, remoteProgress: emptyProgress });

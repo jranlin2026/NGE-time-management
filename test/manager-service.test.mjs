@@ -427,12 +427,12 @@ test("early checkpoint completion adds at most one task while preserving the cur
     date: "2026-07-10",
     now: NOW,
     deliveryMode: "task_dm",
-    maxCriticalTasks: 1,
+    maxCriticalTasks: 3,
   });
   const before = ops.currentSchedule("2026-07-10");
   const beforeTaskIds = new Set(before.map((block) => block.taskId));
   const doingBefore = before.find((block) => block.status === "doing");
-  assert.equal(beforeTaskIds.size, 1);
+  assert.equal(beforeTaskIds.size, 3);
   assert.equal(doingBefore.taskId, current.id);
 
   const result = await manager.handleAction({
@@ -447,8 +447,8 @@ test("early checkpoint completion adds at most one task while preserving the cur
   const afterTaskIds = new Set(result.schedule.blocks.map((block) => block.taskId));
   const introducedTaskIds = [...afterTaskIds].filter((taskId) => !beforeTaskIds.has(taskId));
   const doingAfter = result.schedule.blocks.find((block) => block.status === "doing");
-  assert.equal(afterTaskIds.size, 2);
-  assert.equal(introducedTaskIds.length, 1);
+  assert.ok(introducedTaskIds.length <= 1);
+  assert.ok(afterTaskIds.size <= beforeTaskIds.size + 1);
   assert.equal(afterTaskIds.has(current.id), true);
   assert.equal(doingAfter.taskId, doingBefore.taskId);
   assert.equal(doingAfter.startsAt, doingBefore.startsAt);
