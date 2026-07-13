@@ -1,50 +1,45 @@
-# Task 7 Report: Full Direct-Message to Review Loop
+# Task 7 Report: Approved Personal-Only Week Seed and Model Routing
 
-## Status
+## Status and Commit
 
-Complete. The automated real-boundary-fake E2E passes. Live Feishu polling remains pending after controller merge and restart.
+Complete. Commit: `8252748dd5fe004ac560a34d0a711f12702d1c95` (`feat: seed clear personal execution plans`).
 
 ## Implemented
 
-- Added `test/checkpoint-e2e.test.mjs`, exercising the public checkpoint runner with real SQLite repositories, checkpoint policy, manager service, outbox worker, and Feishu task synchronizer.
-- Faked only the external Codex analysis, Feishu polling/task/message APIs, and delivery boundaries.
-- Proved two direct messages are merged into one candidate reply without creating a task.
-- Proved one confirmed local task creates one remote parent and three remote subtasks while retaining `{ title, minutes }` checkpoint objects.
-- Proved a remote child completion updates one local checkpoint and emits one GUID-keyed event across a repeated poll.
-- Proved a remote parent completion routes an evidence-gated task to `pending_acceptance`.
-- Proved midnight creates the prior day's review with main-task and subtask counts.
-- Added runtime dependency injection for the Feishu polling/task API boundaries and preserved the current schedule when a checkpoint handler does not replan.
-- Added remote task GUIDs to pulled progress so parent and child completion idempotency keys are stable at the external boundary.
-- Updated the development status to automated E2E passed and live polling pending.
+- Added `seedPersonalWeek({ tasks, ops, workDate })` for the approved `2026-07-13` personal-only plan.
+- Idempotently upserts the four stable IDs for personal IP, Jixiang OS, public-live management, and private-live preparation.
+- Stale rows already using the Jixiang OS or public-live stable IDs are rewritten with approved titles, projects, estimates, next actions, completion standards, and absolute timed checkpoints.
+- Existing task status is preserved. A completed checkpoint is preserved only when its approved checkpoint identity/title still matches; unrelated stale completed checkpoint content does not transfer completion.
+- An unchanged second seed is a true no-op: no task update occurs and `updatedAt` remains unchanged even when the clock advances.
+- Superseded active `2026-07-13` tasks are marked `cancelled`, never deleted, with one idempotent `task_superseded_by_clear_plan` event per task.
+- `.env.example` and `README.md` document the inner message analyzer as `gpt-5.6-terra` with `high` reasoning, while the outer Codex automation remains `gpt-5.6-luna` with `medium` reasoning.
 
-## TDD Evidence
+## RED to GREEN Evidence
 
-1. Daily review RED: `test/daily-review.test.mjs` failed because `taskProgress` was absent.
-2. Daily review GREEN: focused test passed after adding main/subtask totals and rendering.
-3. E2E RED: first failed at the non-injectable live Feishu chat resolver; after boundary injection it reached scheduling and exposed missing current-schedule forwarding.
-4. GUID idempotency RED: the E2E observed `feishu-checkpoint:task-video:0:...` instead of a remote child GUID.
-5. E2E GREEN: focused checkpoint, review, policy, runner, and task-sync suite passed 33/33.
+1. Initial RED: the focused command exited 1 with the expected `ERR_MODULE_NOT_FOUND` for the missing `scripts/seed-personal-week.mjs`.
+2. Initial GREEN: the minimal implementation made the focused suite pass 4/4.
+3. Advancing-clock no-op RED: after advancing the repository clock by five minutes, the second identical seed refreshed all four `updatedAt` values; focused result was 3 passed and 1 failed.
+4. Advancing-clock no-op GREEN: comparing approved fields plus merged progress and skipping `tasks.update` for a zero delta preserved all four timestamps; focused returned to 4/4.
 
 ## Verification
 
-- Focused: `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --test test/checkpoint-e2e.test.mjs test/daily-review.test.mjs test/feishu-task-sync.test.mjs test/checkpoint-runner.test.mjs test/checkpoint-policy.test.mjs` — 33 passed, 0 failed.
-- Full: `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --test` — 319 passed, 0 failed.
-- `git diff --check` — clean.
+- Focused: `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --test test/seed-personal-week.test.mjs` — 4 passed, 0 failed.
+- Related: `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --test test/task-repository.test.mjs test/daily-execution-brief.test.mjs test/checkpoint-scheduler.test.mjs test/feishu-task-sync.test.mjs` — 41 passed, 0 failed.
+- Full: `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --test` — 381 passed, 0 failed.
+- `git diff --check` and staged diff check — clean.
 
-## Self-review
+## Committed Scope
 
-- Integration changes are limited to boundary injection, existing-schedule forwarding, and remote GUID propagation.
-- Existing acceptance/writeback behavior is unchanged; parent completion still goes through `manager.handleAction({ action: "complete" })`.
-- Existing transactional inbound finalization and stale-claim rejection remain covered by repository/runner tests.
-- The unrelated pre-existing modification to `.superpowers/sdd/task-2-report.md` was not staged.
+The commit contains exactly these four Task 7 files:
 
-## Remaining Concern
+- `.env.example`
+- `README.md`
+- `scripts/seed-personal-week.mjs`
+- `test/seed-personal-week.test.mjs`
 
-Production Feishu credentials, live DM history pagination, controller merge, restart, and private-chat verification were intentionally not exercised. They remain the documented live acceptance step.
+No live database, Feishu API, automation, credentials, or service lifecycle action was used. Pre-existing edits in other Task reports were preserved and excluded from the commit.
 
-## Review Follow-up
+## Review and Concerns
 
-- Replaced the same-run 15:00 retry with a genuinely later 18:00 checkpoint pull while the remote child remains completed; the durable event count remains exactly one.
-- Seeded the current `doing` task and its `doing` schedule block before the 09:00 candidate DMs.
-- Asserted candidate processing preserves the task status and schedule shape, creates no local candidate task, emits no interrupt event, and never creates a Feishu parent for the candidate title.
-- The stronger E2E required no production correction; only the fixture's initial block status was aligned with its already-doing task.
+- Self-review confirmed the stable IDs, approved fields, checkpoint order and Asia/Shanghai-to-UTC instants, progress merge, no-op update gate, cancellation retention, event idempotency, model-routing documentation, and four-file commit scope.
+- Environment-specific Feishu link rebinding, remote deletion manifests, controlled replay, and live acceptance intentionally remain Task 8 work.

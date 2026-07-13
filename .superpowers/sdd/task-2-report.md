@@ -1,40 +1,52 @@
-# Task 2 report: Operational database schema
+# Task 2 report: Persist timed checkpoint blocks
+
+## Status
+
+- DONE
+- Commit: `247231cd252d4c72fd4e26e926ff9ba69d09846c` (`feat: persist timed checkpoint blocks`)
 
 ## Implementation
 
-- Added migration 3 with project execution fields on `tasks` and the `weekly_plans`, `task_acceptances`, and `project_sync_state` tables.
-- Extended task create/update/read mapping for `projectId`, `milestoneId`, `deliverableId`, `requiresEvidence`, and `impact`.
-- Added `createProjectOperationsRepository(db, deps)` with all required weekly plan, acceptance, and sync-state methods.
-- JSON values are serialized at persistence boundaries and mapped back to objects; confirmation events and acceptance submissions use unique keys for idempotency.
+- Added migration 6 with nullable `schedule_blocks.checkpoint_index` and the `(schedule_date, task_id, checkpoint_index)` lookup index.
+- Persisted and mapped `checkpointIndex` in schedule blocks; omitted and migrated legacy values map to `null`.
+- Preserved checkpoint `startsAt`, `endsAt`, `doneDefinition`, and `feedback` alongside the existing `title`, `minutes`, and `completed` fields.
+- Kept legacy string and object checkpoint JSON readable.
+- Updated the version-two migration fixture with its migration-one `schedule_blocks` table so the fixture represents the schema version it declares.
 
 ## TDD evidence
 
-- RED 1: targeted database/task tests failed 2/9 as expected: missing `project_id`; mapped `projectId` was `undefined`.
-- GREEN 1: targeted database/task tests passed 9/9 after migration and task mapping implementation.
-- RED 2: repository test failed because `project-operations-repository.mjs` did not exist.
-- GREEN 2: all three targeted files passed 12/12 after repository implementation.
+- Baseline focused suite: 13 passed, 0 failed.
+- RED command: `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --test test/database.test.mjs test/task-repository.test.mjs`.
+- RED result: 13 passed, 4 failed for the expected missing behaviors: migration 6, legacy block identity, detailed checkpoint fields, and schedule-block checkpoint mapping.
+- GREEN implementation was limited to the new migration and repository serialization/mapping.
+- The first integration run passed all new behavior assertions and exposed one incomplete legacy v2 test fixture (`schedule_blocks` absent despite migration 1 being marked applied); completing that fixture produced the final focused result of 17 passed, 0 failed.
 
 ## Verification
 
-- Focused: `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --test test/database.test.mjs test/task-repository.test.mjs test/project-operations-repository.test.mjs` — 12 passed, 0 failed.
-- Full suite: `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --test` — 90 passed, 0 failed.
-- `git diff --check` passed.
+- Focused: `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --test test/database.test.mjs test/task-repository.test.mjs` — 17 passed, 0 failed.
+- Full suite: `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --test` — 343 passed, 0 failed, 0 skipped.
+- Post-commit focused verification repeated at 17 passed, 0 failed.
+- Post-commit full verification with the dot reporter exited 0.
+- `git diff --check`, `git diff HEAD^ HEAD --check`, and `git show --check` passed.
+- Commit self-check confirmed exactly the five Task 2 files in the commit and no remaining implementation changes before the required report write.
 
-## Files
+## Files committed
 
-- Modified: `src/db/database.mjs`, `src/db/task-repository.mjs`, `test/database.test.mjs`, `test/task-repository.test.mjs`.
-- Created: `src/db/project-operations-repository.mjs`, `test/project-operations-repository.test.mjs`.
+- Modified: `src/db/database.mjs`.
+- Modified: `src/db/operations-repository.mjs`.
+- Modified: `src/db/task-repository.mjs`.
+- Modified: `test/database.test.mjs`.
+- Modified: `test/task-repository.test.mjs`.
 
-## Self-review and concerns
+## Review
 
-- Reviewed migration ordering, placeholder counts, boolean conversion, JSON boundaries, missing-record errors, and idempotent duplicate behavior.
-- No Task 1 source files were changed. Markdown remains the formal project source of truth.
-- Concern: SQLite emits its existing experimental-feature warning under Node 24; tests remain clean otherwise.
+- Standards axis: 0 findings. Migration ordering, SQL placeholder order, nullable compatibility, JSON normalization, and mapping conventions match the surrounding repositories.
+- Spec axis: 0 findings. Timed checkpoint fields round-trip through create/read/update; checkpoint schedule identity round-trips through current/history reads; migration and legacy compatibility are covered.
+- Task 1 behavior is preserved: no Task 1 source or test file was changed, and the full regression suite remains green.
 
-## Review follow-up
+## Scope and concerns
 
-- Added a regression proving that `saveWeeklyPlan` cannot downgrade or mutate an already confirmed week/version and that retrying the original confirmation remains confirmed with intact metadata.
-- Added a real file-backed version-2 upgrade regression with an existing task; reopening via `openDatabase` preserves old values and applies migration-3 defaults (`NULL`, `0`, and `normal`).
-- RED: targeted run failed 1/14 because saving the confirmed version as draft did not throw; the v2 upgrade regression already passed against the migration implementation.
-- GREEN: exact targeted command passed 14/14 after adding the confirmed-plan immutability guard.
-- Full suite after the fix passed 92/92; `git diff --check` passed.
+- No online Feishu operations, automation changes, service lifecycle actions, or main-workspace changes were performed.
+- No Task 3 or later work was included.
+- The requested report path is a pre-existing tracked historical artifact; overwriting it leaves this report as the sole uncommitted worktree change, intentionally outside the five-file implementation commit specified by Task 2.
+- No blocking concerns. Node emits the repository's existing SQLite experimental-feature warning; all assertions pass.

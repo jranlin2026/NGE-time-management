@@ -1,70 +1,61 @@
-# Task 5 Report
+# Task 5 report: Sync detailed parent tasks and timed children
 
 ## Status
 
-Complete. Fixed checkpoint resolution, seven node policies, polling delivery mode, timed checkpoint persistence, and acceptance-safe remote completion routing are implemented and committed.
-
-## Commit
-
-`d879ca5 feat: apply fixed checkpoint execution policies`
+- DONE
+- Feature commit: `bf96586ce20768d099b1c2b9210abd2dd8ef3eee` (`feat: sync timed Feishu task details`)
 
 ## Implementation
 
-- Added the seven fixed nodes and timezone-aware work-date/current-node resolution. Local midnight maps to the previous work date's `24:00` review.
-- Added due-node collapsing: only an unfinished previous review and a missed `08:00` dispatch are prerequisites; expired progress checks collapse into the current node.
-- Added one seven-handler checkpoint policy with deterministic remote progress handling before message decisions, actionable task creation only for `interrupt_now`/`schedule_today`, candidate-pool and do-not-schedule decisions, merged replies, quiet healthy checkpoints, 15-minute first-incomplete-checkpoint interventions, and one-core-task evening limits.
-- Remote parent completion routes through `manager.handleAction({ action: "complete" })`, preserving evidence-required acceptance behavior. Remote actions carry `deliveryMode: "task_dm"` so their replans do not leak cards.
-- `manager.replanDay({ deliveryMode: "task_dm" })` preserves schedule storage, events, reminders, and Feishu task sync while suppressing daily-plan/replan cards.
-- Added a per-replan `maxCriticalTasks` override so the 18:00/21:00 policy constrains the stored schedule, not only its returned view.
-- Preserved Task 4 checkpoint `{ title, minutes }` objects through task repository persistence and checkpoint completion.
+- Grouped schedule blocks by unique local `taskId`, so each outcome synchronizes one parent and one checkpoint set even when the schedule contains several blocks for that task.
+- Built one `(taskId, checkpointIndex)` lookup per push and assigned every child its own valid `startAt` and `dueAt`.
+- Derived parent bounds from the earliest and latest valid child intervals, including non-adjacent blocks without absorbing another task's interval.
+- Rendered detailed parent descriptions with project, first action, total estimate and completion standard; legacy tasks omit unavailable fields instead of writing literal `undefined` or `null`.
+- Rendered children as `HH:mm–HH:mm｜动作`, with estimate, completion standard and feedback instructions; an interval crossing into next-day midnight ends at `24:00`.
+- Preserved completed checkpoints that are absent from the remaining-work schedule by falling back to their stored explicit interval. Incomplete checkpoints absent from the schedule receive no invented future interval.
+- Preserved stable managed markers, client tokens, crash adoption, link snapshots, completion state and zero-write idempotency on the second identical push.
 
-## TDD Evidence
+## TDD evidence
 
-- Initial RED: new schedule/policy modules were missing and the new `task_dm` manager test failed because a replan card was enqueued.
-- Timed checkpoint RED: repository test proved `minutes` was discarded before the persistence fix.
-- Hardening RED: candidate/do-not-schedule replies were empty and action-triggered replans leaked a card before delivery mode propagation.
-- Focused GREEN: 32/32 passed across schedule, policy, manager, and task repository tests.
+- Initial RED: focused sync tests passed 9 and failed 2. The result repeated `task-ip` once per checkpoint block, child `startAt` was absent, and every child inherited the visited parent block's `endsAt`.
+- Initial GREEN: focused sync tests passed 11/11 after unique-parent grouping, checkpoint lookup, detailed descriptions and interval bounds.
+- Title-contract RED: child summaries were bare actions instead of the specified timed title. GREEN rendered the Shanghai-local `HH:mm–HH:mm｜动作` form.
+- Midnight/legacy RED: a 23:30–midnight child rendered `00:00`, and legacy parent descriptions contained literal `undefined`. GREEN rendered `24:00` and safely omitted missing fields.
+- Completed-only fallback RED: an incomplete future checkpoint absent from the current schedule reused its stored future interval. GREEN limited stored-interval fallback to completed checkpoints.
 
-## Final Verification
+## Verification
 
-- Required focused command: 25 passed, 0 failed.
-- Full Node test suite: 286 passed, 0 failed.
-- `git diff --check`: passed.
-- Cached diff check before commit: passed.
+- Focused + E2E: `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --test test/feishu-task-sync.test.mjs test/checkpoint-e2e.test.mjs` — 14 passed, 0 failed.
+- Full suite: `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --test` — 367 passed, 0 failed, 0 skipped.
+- `git diff --check` passed.
+- `git diff --cached --check` passed before commit.
+- Only the two planned Task 5 source/test files were staged and committed.
 
-## Self-review / Concerns
+## Files committed
 
-- No functional concerns found in Task 5 scope.
-- Task 6 must inject the concrete daily review function as `reviewDay` when composing the one-shot runner; the policy intentionally keeps that boundary dependency-injected.
-- Full tests emit the existing Node experimental SQLite warning; it does not fail tests.
-- The pre-existing `.superpowers/sdd/task-2-report.md` modification was preserved and excluded from the commit.
+- Modified: `src/lib/feishu-task-sync.mjs`.
+- Modified: `test/feishu-task-sync.test.mjs`.
 
-## P1 Review Hardening
+## Self-review
 
-Commit: `2f3df03 fix: harden checkpoint policy execution`
+- Standards axis: 0 findings. The implementation stays inside the existing synchronizer boundary, uses deterministic pure formatting/interval helpers, preserves ESM and `node:test` conventions, and performs no live I/O beyond the injected API contract already owned by the module.
+- Spec axis: 0 findings. Coverage proves unique parent synchronization, per-checkpoint time/detail mapping, min/max parent bounds across split windows, another-task isolation, completed-checkpoint fallback, no future-time invention, timed titles including `24:00`, crash adoption, managed markers, and zero creates/updates on a second identical push.
 
-- Recovery resolution now always considers the unfinished previous-day `24:00` review first at every daytime node, then today's missing `08:00`, then the current node, with date-qualified completion support and deduplication.
-- The analyzer attaches the derived, non-schema/model `groundedP0: true` flag only after deterministic source validation accepts an `interrupt_now`. Policy rejects ungrounded direct inputs and emits `interrupt_current` only when a distinct task is already doing.
-- Actionable dispositions are created and replanned before node-specific progress early returns. New 09:00/12:00/15:00/18:00/21:00 work uses `deliveryMode: "task_dm"`; evening replans retain the one-core-task limit.
-- Added real manager/schedule-engine integration coverage proving a 12:00 task enters the capacity/window-constrained schedule and a 15:00 task is scheduled without replacing the existing doing block.
-- Remote parent/checkpoint completion uses `suppressOutbox: true`. Normal completion status, checkpoint status, and evidence-request cards are suppressed while state transitions, acceptance routing, events, schedule updates, and one merged policy reply remain intact.
-- P1 RED: 14 expected failures across recovery prerequisites, missing P0 provenance, skipped replans, and leaked standalone notifications.
-- P1 focused GREEN: 112 passed, 0 failed.
-- P1 full verification: 296 passed, 0 failed; `git diff --check` and cached diff check passed.
+## Scope and concerns
 
-## Final Review Edge-Case Fix
+- No live Feishu calls, automation changes, database/live-data changes, or service lifecycle actions were performed.
+- The pre-existing tracked `.superpowers/sdd/task-2-report.md` modification was not edited, staged or committed.
+- No blockers. The full suite emits the repository's existing SQLite experimental-feature warning; all assertions pass.
 
-- `handleAction` now honors `suppressOutbox: true` in ambiguous-resolution and not-found early returns, while preserving their returned decision envelopes.
-- Added focused coverage for silent ambiguous and missing-task actions, plus normal missing-task feedback; the existing normal disambiguation test continues to prove visible behavior is unchanged.
-- TDD RED: the two silent-mode tests failed because `disambiguation_card` and `status_message` rows were still enqueued.
-- Focused GREEN: 4 passed, 0 failed for silent and normal early-return behavior; complete manager-service coverage passed 18/18.
-- Full verification: 299 passed, 0 failed. The existing experimental SQLite warning remains non-failing.
+## Independent-review fix: clear stale remote checkpoint times
 
-## Task 3 Remote-Progress Integration Fix
-
-- Checkpoint policy now consumes the synchronizer's published `completedTasks` and `completedCheckpoints` shape; the obsolete `completedParents` name is no longer used.
-- Parent idempotency keys use `localTaskId + completedAt`; checkpoint keys use `localTaskId + checkpointIndex + completedAt`, so records do not depend on absent remote GUIDs and same-time checkpoint completions cannot collide.
-- Integration RED: a pulled parent completion left an evidence-gated task in `doing`, and two same-time checkpoint completions only completed the first checkpoint because both generated the same key.
-- Integration GREEN proves a pulled parent completion reaches `pending_acceptance` and two same-time checkpoint completions persist two distinct `checkpoint_completed` events.
-- Focused synchronization/policy/manager verification: 37 passed, 0 failed.
-- Full verification: 301 passed, 0 failed. The existing experimental SQLite warning remains non-failing.
+- Fix commit: `68f1b949f3b5481f4b0d7c213f7058f4e6847e7e` (`fix: clear stale Feishu checkpoint times`).
+- P0 finding: when an incomplete linked child had previously been scheduled and then disappeared from the remaining-work schedule, omitting `startAt`/`dueAt` from the next PATCH left the old remote Feishu time intact.
+- RED: `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --test test/feishu-task-sync.test.mjs` ran 14 tests, with 12 passing and 2 expected failures. The stale-child PATCH contained only `summary` and `description`; the expected Task v2 clear PATCH also required `start: null`, `due: null` and `update_fields` entries for both fields. The initial unscheduled managed snapshot was `undefined` instead of `null`.
+- Builder proof: the existing `buildTaskUpdateBody()` already maps `startAt: null` and `dueAt: null` to Task v2 `task.start = null`, `task.due = null` with `start`/`due` in `update_fields`; no `feishu-tasks.mjs` production change was needed. The existing `buildTaskBody()` ignores null fields, so an initially unscheduled create remains untimed.
+- GREEN: the focused synchronizer suite passed 14/14. The regression performs a scheduled push, removes one incomplete child block while preserving the same parent, verifies the exact clear PATCH, and verifies a third identical push performs zero additional updates.
+- Final focused verification: synchronizer + Feishu task builder + checkpoint E2E passed 19/19.
+- Final full verification: 368 passed, 0 failed, 0 skipped.
+- `git diff --check` and `git diff --cached --check` passed.
+- Standards axis: 0 findings. The fix uses the existing managed snapshot and Task v2 builder contracts without new API or live-I/O paths.
+- Spec axis: 0 findings. Previously scheduled incomplete children now explicitly clear stale remote time, initially untimed creates remain untimed, completed children preserve historical intervals, and repeat pushes remain idempotent.
