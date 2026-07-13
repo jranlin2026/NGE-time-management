@@ -93,6 +93,8 @@ export function createCodexAnalyzer(config = {}, deps = {}) {
     },
 
     async analyzeCheckpointMessages({ node, workDate, messages = [], context = {} }) {
+      const acknowledgement = localAcknowledgementAnalysis(messages);
+      if (acknowledgement) return acknowledgement;
       try {
         const text = await run({
           mode: "checkpoint_messages",
@@ -112,6 +114,34 @@ export function createCodexAnalyzer(config = {}, deps = {}) {
       }
     },
   };
+}
+
+function localAcknowledgementAnalysis(messages) {
+  if (!messages.length || !messages.every(isTestAcknowledgement)) return null;
+  return {
+    items: messages.map((message) => ({
+      messageIds: [String(message.messageId)],
+      category: "communication",
+      disposition: "no_action",
+      title: "确认测试回执",
+      projectId: null,
+      urgency: "low",
+      mustBeOwner: false,
+      estimateMinutes: 1,
+      dueAt: null,
+      nextAction: "继续执行当前安排，无需新增任务",
+      doneDefinition: "测试回执已记录",
+      checkpoints: [{ title: "记录测试回执日志", minutes: 15 }],
+      rationale: "用户仅确认机器人测试消息，不新增任务也不打断当前工作",
+    })),
+    combinedReplyContext: "已收到测试回执，私聊链路正常。",
+    analysisStatus: "complete",
+  };
+}
+
+function isTestAcknowledgement(message) {
+  const text = originalMessageText(message).replace(/\s+/gu, "");
+  return /^(?:收到测试|测试收到|收到(?:了)?测试|已收到(?:测试)?|收到)$/u.test(text);
 }
 
 export function fallbackTaskAnalysis(rawInput) {

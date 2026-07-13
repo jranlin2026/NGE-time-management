@@ -718,6 +718,49 @@ test("pushes completed child and accepted parent states but not pending acceptan
   assert.equal(pending.api.createdParents[0].completedAt, undefined);
 });
 
+test("does not rewrite completed_at when a linked child is already completed in Feishu", async () => {
+  const fixture = syncFixture({ checkpoints: [{ title: "写脚本", completed: false }] });
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
+
+  fixture.task.checkpoints[0].completed = true;
+  fixture.api.remoteChildren[0].completed_at = "1783908000000";
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule: fixture.schedule });
+
+  assert.equal(fixture.api.updated.length, 1);
+  assert.equal("completedAt" in fixture.api.updated[0].body, false);
+});
+
+test("does not rewrite completed_at when clearing a remotely completed child", async () => {
+  const task = {
+    id: "task-cleared-child",
+    title: "个人IP｜完成一条脚本",
+    project: "个人IP",
+    nextAction: "完成脚本",
+    estimateMinutes: 30,
+    dueAt: "2026-07-13",
+    doneDefinition: "脚本可拍摄",
+    status: "scheduled",
+    checkpoints: [{ title: "完成脚本", minutes: 30, completed: false }],
+  };
+  const schedule = { blocks: [{
+    taskId: task.id,
+    checkpointIndex: 0,
+    startsAt: "2026-07-13T02:00:00.000Z",
+    endsAt: "2026-07-13T02:30:00.000Z",
+  }] };
+  const fixture = detailedSyncFixture({ localTasks: [task], schedule });
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+
+  task.checkpoints[0].completed = true;
+  fixture.remoteChildren.get("parent-1")[0].completed_at = "1783908000000";
+  schedule.blocks = [];
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+
+  const childUpdate = fixture.api.updated.find((item) => item.guid === "parent-1-child-1");
+  assert.ok(childUpdate);
+  assert.equal("completedAt" in childUpdate.body, false);
+});
+
 test("pulls progress only for task ids in the requested date schedule", async () => {
   const localTasks = new Map([
     ["task-13", { id: "task-13", title: "13", status: "scheduled", checkpoints: [] }],

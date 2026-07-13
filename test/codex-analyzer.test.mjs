@@ -272,6 +272,28 @@ test("analyzes one interval as one batch", async () => {
   assert.match(invocation.prompt, /Never invent deadlines, losses, customers, owners, evidence, or attachment contents\./);
 });
 
+test("handles a test acknowledgement locally without starting Codex", async () => {
+  let invocations = 0;
+  const analyzer = createCodexAnalyzer({}, {
+    run: async () => {
+      invocations += 1;
+      throw new Error("this acknowledgement should not invoke Codex");
+    },
+  });
+
+  const result = await analyzer.analyzeCheckpointMessages({
+    node: "21:00",
+    workDate: "2026-07-13",
+    messages: [{ messageId: "om-repair-test", content: { text: "收到测试" } }],
+    context: {},
+  });
+
+  assert.equal(invocations, 0);
+  assert.equal(result.analysisStatus, "complete");
+  assert.equal(result.items[0].disposition, "no_action");
+  assert.match(result.combinedReplyContext, /测试回执/);
+});
+
 test("invalid AI output falls back to one candidate review per message", async () => {
   const analyzer = createCodexAnalyzer({}, { run: async () => "{}" });
   const messages = [

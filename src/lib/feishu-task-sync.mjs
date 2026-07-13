@@ -105,16 +105,21 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
   async function ensureRemote({ localTask, checkpointIndex, parentGuid, fields, remoteTasks }) {
     const snapshotHash = hash(fields);
     const existing = links.findFeishuLink(localTask.id, checkpointIndex);
-    if (!existing) {
-      const remote = remoteTasks.find((task) =>
+    const linkedRemote = existing
+      ? remoteTasks.find((task) => task.guid === existing.taskGuid)
+      : remoteTasks.find((task) =>
         (task.client_token || task.clientToken) === fields.clientToken
         || String(task.description || "").includes(fields.managedMarker));
-      if (remote?.guid) {
-        await api.updateTask(config, remote.guid, fields);
+    const writableFields = completedAt(linkedRemote) && fields.completedAt
+      ? omitCompletedAt(fields)
+      : fields;
+    if (!existing) {
+      if (linkedRemote?.guid) {
+        await api.updateTask(config, linkedRemote.guid, writableFields);
         return links.upsertFeishuLink({
           localTaskId: localTask.id,
           checkpointIndex,
-          taskGuid: remote.guid,
+          taskGuid: linkedRemote.guid,
           parentGuid,
           snapshotHash,
         });
@@ -127,7 +132,7 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
       return links.upsertFeishuLink({ localTaskId: localTask.id, checkpointIndex, taskGuid, parentGuid, snapshotHash });
     }
     if (existing.snapshotHash !== snapshotHash) {
-      await api.updateTask(config, existing.taskGuid, fields);
+      await api.updateTask(config, existing.taskGuid, writableFields);
       return links.upsertFeishuLink({ ...existing, parentGuid, snapshotHash });
     }
     return existing;
@@ -158,7 +163,7 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
         null,
         null,
         false,
-      ));
+      ), remoteParent);
       const remoteChildren = await api.listSubtasks(config, parentLink.taskGuid);
       const remoteChildrenByGuid = new Map((remoteChildren || []).map((task) => [task.guid, task]));
       const taskLinksByCheckpoint = new Map(taskLinks.map((link) => [link.checkpointIndex, link]));
@@ -180,15 +185,18 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
           interval ? interval.startAt : checkpoint.completed ? undefined : null,
           interval ? interval.dueAt : checkpoint.completed ? undefined : null,
           checkpoint.completed,
-        ));
+        ), remoteChildrenByGuid.get(childLink.taskGuid));
       }
     }
   }
 
-  async function updateLinkedRemote(link, fields) {
+  async function updateLinkedRemote(link, fields, remoteTask) {
     const snapshotHash = hash(fields);
     if (link.snapshotHash === snapshotHash) return link;
-    await api.updateTask(config, link.taskGuid, fields);
+    const writableFields = completedAt(remoteTask) && fields.completedAt
+      ? omitCompletedAt(fields)
+      : fields;
+    await api.updateTask(config, link.taskGuid, writableFields);
     return links.upsertFeishuLink({ ...link, snapshotHash });
   }
 }
@@ -292,6 +300,11 @@ function stableClientToken(localTaskId, checkpointIndex) {
 
 function hash(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function omitCompletedAt(fields) {
+  const { completedAt: _completedAt, ...remaining } = fields;
+  return remaining;
 }
 
 function extractGuid(response) {
