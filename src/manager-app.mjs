@@ -235,6 +235,8 @@ export function createManagerRuntime(config, deps = {}) {
   const policy = deps.policy || createCheckpointPolicy({
     manager: state.manager,
     tasks: state.tasks,
+    timezone: config.timezone,
+    getSchedule: (date) => ({ date, blocks: state.ops.currentSchedule(date) }),
     reviewDay: ({ date }) => runRuntimeDailyReview({ date, config, state }),
   });
   const checkpointRunner = createCheckpointRunner({

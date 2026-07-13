@@ -335,6 +335,7 @@ test("completes one checkpoint without completing the parent task", async () => 
   assert.equal(result.task.status, "doing");
   assert.equal(result.task.checkpoints[0].completed, true);
   assert.equal(result.task.checkpoints[1].completed, false);
+  assert.ok(Array.isArray(result.schedule.blocks));
   assert.equal(ops.listEvents({ taskId: task.id }).some((event) => event.kind === "checkpoint_completed"), true);
   db.close();
 });

@@ -27,6 +27,21 @@ test("leaves messages and cursor pending when task sync fails", async () => {
   assert.deepEqual(fixture.calls.slice(-2), ["fail", "unlock"]);
 });
 
+test("task sync failure sends one private warning and keeps the run failed", async () => {
+  const fixture = runnerFixture({ syncError: new Error("task api unavailable") });
+
+  await assert.rejects(
+    () => fixture.runner.run({ now: "2026-07-13T12:00:00+08:00", forcedNode: "12:00" }),
+    /task api unavailable/,
+  );
+
+  const warnings = fixture.outbox.filter((row) => row.idempotencyKey === "private-sync-failure:2026-07-13:12:00");
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].kind, "private_checkpoint_summary");
+  assert.equal(warnings[0].payload.text, "计划已经生成，但飞书任务同步失败。\n当前不要按旧任务执行；系统将在下一节点重试，并在同步完成后发送最新版执行令。");
+  assert.equal(fixture.runStatuses.get("2026-07-13:12:00"), "failed");
+});
+
 test("queues no reply for a quiet healthy 15:00 run", async () => {
   const fixture = runnerFixture({ messages: [], healthyProgress: true });
   const result = await fixture.runner.run({ now: "2026-07-13T15:00:00+08:00", forcedNode: "15:00" });
@@ -294,11 +309,12 @@ function runnerFixture({ messages = [], pendingMessages = [], pollMessages, comp
   let cursor = null;
   let shouldFailFinalize = finalizeErrorOnce;
   const savedAnalyses = new Map();
+  const runStatuses = new Map();
   const runtime = {
     claimLock: (input) => { calls.push("lock"); onClaimLock?.(input); return !lockHeld; },
     releaseLock: () => { calls.push("unlock"); },
-    claimRun: (input) => { calls.push("claim"); claims.push(input); return { claimed: true, claimToken: "claim-1" }; },
-    failRun: () => { calls.push("fail"); },
+    claimRun: (input) => { calls.push("claim"); claims.push(input); runStatuses.set(input.runKey, "running"); return { claimed: true, claimToken: "claim-1" }; },
+    failRun: (runKey) => { calls.push("fail"); runStatuses.set(runKey, "failed"); },
     completeRun: () => { calls.push("complete"); },
     loadRunAnalysis: persistAnalysis ? (runKey) => savedAnalyses.get(runKey) || null : undefined,
     saveRunAnalysis: persistAnalysis ? (runKey, _claimToken, analysis) => {
@@ -344,7 +360,7 @@ function runnerFixture({ messages = [], pendingMessages = [], pollMessages, comp
   };
   let runner = createCheckpointRunner(deps);
   return {
-    get runner() { return runner; }, runtime, calls, claims, polls, finalizedThrough, outbox, pending, get cursor() { return cursor; },
+    get runner() { return runner; }, runtime, calls, claims, polls, finalizedThrough, outbox, pending, runStatuses, get cursor() { return cursor; },
     setDelivery(overrides) { Object.assign(deps, overrides); runner = createCheckpointRunner(deps); },
   };
 }

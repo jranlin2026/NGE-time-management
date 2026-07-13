@@ -85,7 +85,27 @@ export function createCheckpointRunner(deps) {
             prelude: progress,
           });
           const schedule = result.schedule || analysisContext.schedule || { blocks: [] };
-          await deps.taskSync.pushSchedule({ date: workDate, schedule });
+          try {
+            await deps.taskSync.pushSchedule({ date: workDate, schedule });
+          } catch (syncError) {
+            try {
+              if (deps.config.managerUserId) {
+                await deps.ops.enqueueOutbox({
+                  kind: "private_checkpoint_summary",
+                  payload: {
+                    text: "计划已经生成，但飞书任务同步失败。\n当前不要按旧任务执行；系统将在下一节点重试，并在同步完成后发送最新版执行令。",
+                    receiveId: deps.config.managerUserId,
+                    receiveIdType: "open_id",
+                  },
+                  idempotencyKey: `private-sync-failure:${workDate}:${node}`,
+                });
+                await deps.outboxWorker.flush({ throwOnFailure: true });
+              }
+            } catch {
+              // The original sync failure controls retry semantics.
+            }
+            throw syncError;
+          }
 
           if (result.replyRequired && result.reply) {
             if (!deps.config.managerUserId) throw new Error("private checkpoint summary requires owner open_id");

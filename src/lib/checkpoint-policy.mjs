@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { renderDailyExecutionBrief, renderPlanDelta } from "./daily-execution-brief.mjs";
 
 const ACTIONABLE_DISPOSITIONS = new Set(["interrupt_now", "schedule_today"]);
 const EVENING_NODES = new Set(["18:00", "21:00"]);
@@ -18,19 +19,28 @@ export function createCheckpointPolicy(deps) {
   return {
     async reconcileRemoteProgress(input) {
       const state = createState(input);
+      state.previousSchedule = readSchedule(state, deps);
       await applyRemoteProgress(state, deps);
-      return { actions: state.actions, replyParts: state.replyParts, changed: state.changed };
+      return {
+        actions: state.actions,
+        replyParts: state.replyParts,
+        changed: state.changed,
+        schedule: state.schedule,
+        previousSchedule: state.previousSchedule,
+      };
     },
     async apply(input) {
       const handler = handlers[input?.node];
       if (!handler) throw new Error(`unsupported checkpoint node: ${input?.node}`);
       const state = createState(input);
+      state.previousSchedule ||= readSchedule(state, deps);
 
       if (!input.remoteProgressApplied) await applyRemoteProgress(state, deps);
       await applyDeterministicItems(state, deps);
       await createActionableTasks(state, deps);
       await replanCreatedTasks(state, deps);
       await handler(state, deps);
+      if (state.node !== "08:00" && state.node !== "24:00") finalizeCheckpointReply(state, deps);
       const reply = state.replyParts.filter(Boolean).join("\n");
       return {
         node: state.node,
@@ -54,7 +64,8 @@ function createState(input) {
     actions: [...(input.prelude?.actions || [])],
     replyParts: [...(input.prelude?.replyParts || [])],
     changed: Boolean(input.prelude?.changed),
-    schedule: null,
+    schedule: input.prelude?.schedule || null,
+    previousSchedule: input.prelude?.previousSchedule || null,
   };
 }
 
@@ -62,7 +73,7 @@ async function applyRemoteProgress(state, deps) {
   for (const change of state.remoteProgress.completedCheckpoints || []) {
     const task = deps.tasks.findById?.(change.localTaskId);
     if (task?.checkpoints?.[change.checkpointIndex]?.completed) continue;
-    await deps.manager.handleAction({
+    const result = await deps.manager.handleAction({
       action: "complete_checkpoint",
       taskId: change.localTaskId,
       checkpointIndex: change.checkpointIndex,
@@ -70,8 +81,8 @@ async function applyRemoteProgress(state, deps) {
       deliveryMode: "task_dm",
       suppressOutbox: true,
     });
+    state.schedule = result?.schedule || state.schedule;
     state.actions.push({ type: "checkpoint_completed", taskId: change.localTaskId, checkpointIndex: change.checkpointIndex });
-    state.replyParts.push(`已同步完成关卡：${task?.checkpoints?.[change.checkpointIndex]?.title || change.localTaskId}`);
     state.changed = true;
   }
   for (const change of state.remoteProgress.completedTasks || []) {
@@ -82,10 +93,9 @@ async function applyRemoteProgress(state, deps) {
       deliveryMode: "task_dm",
       suppressOutbox: true,
     });
+    state.schedule = result?.schedule || state.schedule;
     state.actions.push({ type: "parent_completed", taskId: change.localTaskId });
-    state.replyParts.push(result?.action === "evidence_required"
-      ? `已同步主任务完成：${change.localTaskId}。请补充验收证据。`
-      : `已同步主任务完成：${change.localTaskId}`);
+    if (result?.action === "evidence_required") state.actions.push({ type: "evidence_required", taskId: change.localTaskId });
     state.changed = true;
   }
 }
@@ -109,11 +119,9 @@ async function applyDeterministicItems(state, deps) {
       state.changed = true;
     } else if (item.disposition === "candidate_pool") {
       state.actions.push({ type: "candidate_recorded", title: item.title });
-      state.replyParts.push(`已进入候选池：${item.title}`);
       state.changed = true;
     } else if (item.disposition === "do_not_schedule") {
       state.actions.push({ type: "not_scheduled", title: item.title, rationale: item.rationale });
-      state.replyParts.push(`暂不安排：${item.title}。${item.rationale || "当前不占用核心执行时间。"}`);
       state.changed = true;
     }
   }
@@ -124,7 +132,6 @@ async function createActionableTasks(state, deps) {
     if (!ACTIONABLE_DISPOSITIONS.has(item.disposition)) continue;
     if (item.disposition === "interrupt_now" && item.groundedP0 !== true) {
       state.actions.push({ type: "candidate_recorded", title: item.title, reason: "ungrounded_interrupt" });
-      state.replyParts.push(`已进入候选池：${item.title}`);
       state.changed = true;
       continue;
     }
@@ -134,7 +141,6 @@ async function createActionableTasks(state, deps) {
     if (item.disposition === "interrupt_now" && doing && doing.id !== created.id) {
       state.actions.push({ type: "interrupt_current", taskId: created.id });
     }
-    state.replyParts.push(`${item.disposition === "interrupt_now" ? "已立即插入" : "已安排到今天"}：${created.title}`);
     state.changed = true;
     state.tasksCreated = true;
   }
@@ -153,26 +159,33 @@ async function replanCreatedTasks(state, deps) {
 
 async function runDailyDispatch(state, deps) {
   state.schedule = await deps.manager.dispatchDay({ date: state.workDate, deliveryMode: "task_dm" });
-  state.replyParts.push(renderDispatch(state.schedule, deps.tasks.listActive()));
+  state.replyParts.push(renderDailyExecutionBrief({
+    date: state.workDate,
+    schedule: state.schedule,
+    tasks: deps.tasks.listActive(),
+    timezone: deps.timezone || "Asia/Shanghai",
+    feedbackNodes: ["12:00", "15:00", "18:00", "21:00", "24:00"],
+    doNotDo: ["不新增项目", "不反复修改已经可交付的版本"],
+  }));
   state.changed = true;
 }
 
 async function runMorningCalibration(state, deps) {
   if (!state.changed) return;
   state.schedule ||= await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_09:00", deliveryMode: "task_dm" });
-  state.replyParts.push("上午计划已合并调整。请按飞书任务中的最新顺序执行。");
 }
 
 async function runMorningProgress(state, deps) {
+  if (state.changed && !state.schedule) {
+    state.schedule = await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_12:00", deliveryMode: "task_dm" });
+  }
   const active = activeForProgress(deps.tasks.listActive());
   if (hasProgress(active, state.remoteProgress)) {
-    if (state.changed) state.replyParts.push("上午进度已同步，14:00 继续下一项。");
     return;
   }
   const checkpoint = firstIncompleteCheckpoint(active);
   if (!checkpoint) return;
   state.actions.push({ type: "minimum_action", minutes: 15, title: checkpoint.title });
-  state.replyParts.push(`上午还没有可见进度。现在只做一个15分钟动作：${checkpoint.title}。`);
   state.changed = true;
 }
 
@@ -183,7 +196,6 @@ async function runAfternoonStartCheck(state, deps) {
   const checkpoint = firstIncompleteCheckpoint(active);
   if (!checkpoint) return;
   state.actions.push({ type: "minimum_action", minutes: 15, title: checkpoint.title });
-  state.replyParts.push(`下午尚未启动。现在开始15分钟：${checkpoint.title}，完成后直接提交结果。`);
   state.changed = true;
 }
 
@@ -191,7 +203,7 @@ async function runDayOutcomeCheck(state, deps) {
   state.schedule ||= await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_18:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
   state.schedule = keepOneCoreTask(state.schedule);
   if (state.schedule.blocks.length || state.changed) {
-    state.replyParts.push("晚间只保留一个最接近交付的核心任务，其余不顺延堆积。");
+    state.actions.push({ type: "evening_trim", schedule: state.schedule });
     state.changed = true;
   }
 }
@@ -201,15 +213,15 @@ async function runFinalSprint(state, deps) {
   state.schedule = keepOneCoreTask(state.schedule);
   const active = activeForProgress(deps.tasks.listActive());
   const doing = deps.tasks.findDoing?.() || active.find((task) => task.status === "doing");
-  if (doing) state.replyParts.push(`晚间任务保持不变：${doing.title}，最晚 24:00 提交。`);
-  else {
+  if (doing) {
+    state.actions.push({ type: "final_sprint", taskId: doing.id });
+  } else {
     const checkpoint = firstIncompleteCheckpoint(active);
     if (checkpoint) {
       state.actions.push({ type: "minimum_action", minutes: 15, title: checkpoint.title });
-      state.replyParts.push(`今晚只启动一个15分钟动作：${checkpoint.title}，不再加入大任务。`);
     }
   }
-  if (state.schedule.blocks.length || state.replyParts.length) state.changed = true;
+  if (state.schedule.blocks.length || state.actions.length) state.changed = true;
 }
 
 async function runDailyReview(state, deps) {
@@ -217,6 +229,143 @@ async function runDailyReview(state, deps) {
   state.actions.push({ type: "daily_review", date: state.workDate });
   state.replyParts.push(review?.renderedText || review?.text || "今日复盘已生成。");
   state.changed = true;
+}
+
+function finalizeCheckpointReply(state, deps) {
+  state.schedule ||= readSchedule(state, deps);
+  const facts = actionFacts(state.actions, deps.tasks);
+  const changes = diffSchedule(state.previousSchedule, state.schedule, deps.tasks, deps.timezone || "Asia/Shanghai");
+  if (!facts.length && !changes.length) {
+    state.replyParts = [];
+    state.changed = false;
+    return;
+  }
+  const explicitChanges = changes.length ? changes : ["排程保持不变"];
+  state.replyParts = [renderPlanDelta({
+    node: state.node,
+    facts,
+    changes: explicitChanges,
+    currentAction: nextActionAtOrAfter(state.schedule, deps.tasks, state.node, deps.timezone || "Asia/Shanghai")
+      || "按当前计划继续执行",
+    feedbackDeadline: nextFeedbackNode(state.node),
+  })];
+  state.changed = true;
+}
+
+function readSchedule(state, deps) {
+  const schedule = deps.getSchedule?.(state.workDate);
+  if (schedule?.blocks) return schedule;
+  return { date: state.workDate, blocks: [] };
+}
+
+function actionFacts(actions, tasks) {
+  const facts = [];
+  for (const action of actions || []) {
+    const title = action.taskId ? taskTitle(tasks, action.taskId) : "";
+    if (action.type === "checkpoint_completed") {
+      const task = tasks.findById?.(action.taskId);
+      const checkpoint = task?.checkpoints?.[action.checkpointIndex]?.title;
+      facts.push(`已同步完成关卡：${checkpoint || title}`);
+    } else if (action.type === "parent_completed") facts.push(`已同步主任务完成：${title}`);
+    else if (action.type === "evidence_required") facts.push("请补充验收证据");
+    else if (action.type === "task_feedback") facts.push(action.detail || "已收到进度反馈");
+    else if (action.type === "candidate_recorded") facts.push(`已进入候选池：${action.title}`);
+    else if (action.type === "not_scheduled") facts.push(`暂不安排：${action.title}。${action.rationale || "当前不占用核心执行时间。"}`);
+    else if (action.type === "task_created") facts.push(`${action.disposition === "interrupt_now" ? "已立即插入" : "已安排到今天"}：${title}`);
+    else if (action.type === "minimum_action") facts.push(`尚无可见进度，启动${action.minutes || 15}分钟动作：${action.title}`);
+    else if (action.type === "final_sprint") facts.push(`未完成关键交付：${title}`);
+    else if (action.type === "evening_trim") {
+      const keptId = action.schedule?.blocks?.[0]?.taskId;
+      if (keptId) facts.push(`保留晚间工作：${taskTitle(tasks, keptId)}`);
+    }
+  }
+  return facts.filter(Boolean);
+}
+
+function diffSchedule(previousSchedule, schedule, tasks, timezone) {
+  const previous = new Map((previousSchedule?.blocks || []).map((block) => [scheduleIdentity(block), block]));
+  const current = new Map((schedule?.blocks || []).map((block) => [scheduleIdentity(block), block]));
+  const changes = [];
+  for (const [identity, block] of previous) {
+    const next = current.get(identity);
+    if (!next) {
+      changes.push({ at: block.startsAt || "", text: `移除：${blockTitle(block, tasks)} ${formatInterval(block, timezone)}` });
+    } else if (block.startsAt !== next.startsAt || block.endsAt !== next.endsAt) {
+      changes.push({ at: next.startsAt || block.startsAt || "", text: `移动：${blockTitle(next, tasks)} ${formatInterval(block, timezone)}→${formatInterval(next, timezone)}` });
+    }
+  }
+  for (const [identity, block] of current) {
+    if (!previous.has(identity)) changes.push({ at: block.startsAt || "", text: `新增：${blockTitle(block, tasks)} ${formatInterval(block, timezone)}` });
+  }
+  return changes
+    .sort((left, right) => left.at.localeCompare(right.at) || left.text.localeCompare(right.text))
+    .map((item) => item.text);
+}
+
+function nextActionAtOrAfter(schedule, tasks, node, timezone) {
+  const blocks = [...(schedule?.blocks || [])].sort((left, right) => String(left.startsAt || "").localeCompare(String(right.startsAt || "")));
+  const block = blocks.find((item) => {
+    const end = localBlockEnd(item, timezone);
+    return !end || end > node;
+  });
+  if (!block) return "";
+  const task = tasks.findById?.(block.taskId) || tasks.listActive?.().find((item) => item.id === block.taskId);
+  return task?.checkpoints?.[block.checkpointIndex]?.title || task?.nextAction || task?.title || block.taskId;
+}
+
+function nextFeedbackNode(node) {
+  return ({ "09:00": "12:00", "12:00": "15:00", "15:00": "18:00", "18:00": "21:00", "21:00": "24:00" })[node] || "";
+}
+
+function scheduleIdentity(block) {
+  return `${block.taskId}:${Number.isInteger(block.checkpointIndex) ? block.checkpointIndex : ""}`;
+}
+
+function blockTitle(block, tasks) {
+  const task = tasks.findById?.(block.taskId) || tasks.listActive?.().find((item) => item.id === block.taskId);
+  const checkpoint = task?.checkpoints?.[block.checkpointIndex]?.title;
+  return checkpoint ? `${task.title}｜${checkpoint}` : task?.title || block.taskId;
+}
+
+function taskTitle(tasks, taskId) {
+  return tasks.findById?.(taskId)?.title || tasks.listActive?.().find((item) => item.id === taskId)?.title || taskId || "未知任务";
+}
+
+function formatInterval(block, timezone) {
+  const start = localClock(block.startsAt, timezone);
+  const end = localBlockEnd(block, timezone);
+  return start && end ? `${start}–${end}` : "未定时间";
+}
+
+function localBlockEnd(block, timezone) {
+  const start = localDateTimeParts(block.startsAt, timezone);
+  const end = localDateTimeParts(block.endsAt, timezone);
+  if (!start || !end) return "";
+  if (end.hour === "00" && end.minute === "00" && localDateKey(start) !== localDateKey(end)) return "24:00";
+  return `${end.hour}:${end.minute}`;
+}
+
+function localClock(value, timezone) {
+  const parts = localDateTimeParts(value, timezone);
+  return parts ? `${parts.hour}:${parts.minute}` : "";
+}
+
+function localDateTimeParts(value, timezone) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date).map((part) => [part.type, part.value]));
+}
+
+function localDateKey(parts) {
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 function taskInput(item, itemIndex) {
@@ -307,17 +456,6 @@ function keepOneCoreTask(schedule) {
   if (!schedule) return { blocks: [] };
   const firstTaskId = schedule.blocks?.[0]?.taskId;
   return { ...schedule, blocks: firstTaskId ? schedule.blocks.filter((block) => block.taskId === firstTaskId) : [] };
-}
-
-function renderDispatch(schedule, tasks) {
-  const firstBlock = schedule?.blocks?.[0];
-  const first = tasks.find((task) => task.id === firstBlock?.taskId);
-  return [
-    `今日必胜：${first?.title || "按周计划推进核心交付"}`,
-    `任务数量：${new Set((schedule?.blocks || []).map((block) => block.taskId)).size}`,
-    `第一步：${first?.checkpoints?.find((item) => !item.completed)?.title || first?.nextAction || "打开飞书任务开始执行"}`,
-    "临时输入将在固定节点统一处理。",
-  ].join("\n");
 }
 
 export { EVENING_NODES };

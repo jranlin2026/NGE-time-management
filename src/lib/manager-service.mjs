@@ -143,7 +143,8 @@ export function createManagerService(deps) {
         }
         return saved;
       });
-      return { action: input.action, task: updated };
+      const schedule = await replanDay({ reason: "checkpoint_completed", deliveryMode: input.deliveryMode });
+      return { action: input.action, task: updated, schedule };
     }
     if (input.action === "start") {
       if (task.status === "doing") {
@@ -227,8 +228,8 @@ export function createManagerService(deps) {
     if (input.action === "complete" && input.deliveryMode !== "task_dm") {
       enqueueFeishuTaskCompletion(updated);
     }
-    await replanDay({ reason: `task_${input.action}`, deliveryMode: input.deliveryMode });
-    return { action: input.action, task: tasks.findById(task.id), minimumAction: minimum };
+    const schedule = await replanDay({ reason: `task_${input.action}`, deliveryMode: input.deliveryMode });
+    return { action: input.action, task: tasks.findById(task.id), minimumAction: minimum, schedule };
   }
 
   async function replanDay(options = {}) {

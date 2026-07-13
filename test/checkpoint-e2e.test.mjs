@@ -5,6 +5,21 @@ import path from "node:path";
 import test from "node:test";
 import { createManagerRuntime } from "../src/manager-app.mjs";
 
+test("08:00 private reply is a full brief in the configured local timezone", async (t) => {
+  const day = e2eFixture({ timezone: "Asia/Tokyo" });
+  t.after(() => day.close());
+  day.seedConfirmedDailyTask();
+
+  await day.runner.run({ now: "2026-07-13T08:00:00+09:00" });
+
+  assert.equal(day.feishu.privateReplies.length, 1);
+  const text = day.feishu.privateReplies[0].text;
+  assert.match(text, /11:00–11:30/);
+  assert.match(text, /工作内容/);
+  assert.match(text, /完成标准/);
+  assert.match(text, /反馈规则/);
+});
+
 test("one day flows from merged DMs through subtasks and review", async (t) => {
   const day = e2eFixture();
   t.after(() => day.close());
@@ -52,7 +67,7 @@ test("one day flows from merged DMs through subtasks and review", async (t) => {
   assert.match(review.renderedText, /完成子任务：1\/3/);
 });
 
-function e2eFixture() {
+function e2eFixture({ timezone = "Asia/Shanghai" } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "checkpoint-e2e-"));
   writeProject(directory);
   const messages = [];
@@ -105,7 +120,7 @@ function e2eFixture() {
     kbDir: directory,
     backupDir: directory,
     markdownExportDir: directory,
-    timezone: "Asia/Shanghai",
+    timezone,
     managerUserId: "ou-owner",
     feishuReceiveId: "ou-owner",
     feishuReceiveIdType: "open_id",
@@ -132,7 +147,7 @@ function e2eFixture() {
   });
   const runner = {
     run({ now }) {
-      const local = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(now));
+      const local = new Intl.DateTimeFormat("en-GB", { timeZone: timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(now));
       return runtime.checkpointRunner.run({ now, forcedNode: local === "00:00" ? "24:00" : local });
     },
   };
@@ -156,6 +171,7 @@ function e2eFixture() {
         deliverableId: "video-01",
         status: "doing",
         requiresEvidence: true,
+        doneDefinition: "提交可发布的口播视频",
         estimateMinutes: 90,
         checkpoints: [
           { title: "写脚本", minutes: 30 },
