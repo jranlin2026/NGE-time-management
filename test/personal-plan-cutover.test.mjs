@@ -357,6 +357,61 @@ test("applying an already-applied manifest is a no-op", async (t) => {
   assert.equal(fixture.api.deleteCalls.length, 0);
 });
 
+test("an already-applied manifest rejects remote drift without mutation", async (t) => {
+  const scenarios = [
+    {
+      name: "target child is missing",
+      mutate(fixture) {
+        fixture.api.children["keep-parent"].pop();
+      },
+      error: /target personal IP remote children must exactly match its links/,
+    },
+    {
+      name: "completed history changed",
+      mutate(fixture) {
+        fixture.api.parents = fixture.api.parents.filter((item) => item.guid !== "history-4");
+      },
+      error: /exactly five completed historical parents/,
+    },
+    {
+      name: "legacy candidate remains",
+      mutate(fixture) {
+        fixture.api.parents.push(remoteParent(fixture.legacyGuids[0], { allDay: true }));
+      },
+      error: /zero legacy duplicate parents/,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async (t) => {
+      const fixture = await cutoverFixture(t);
+      const prepared = await preparePersonalPlanCutover(fixture.prepareOptions);
+      await applyPersonalPlanCutover({
+        manifestPath: prepared.manifestPath,
+        manifestDir: fixture.manifestDir,
+        repo: fixture.repo,
+        api: fixture.api,
+        config: {},
+        expectedWorkDate: WORK_DATE,
+      });
+      const beforeLinks = fixture.repo.listAllFeishuLinks();
+      fixture.api.deleteCalls.length = 0;
+      scenario.mutate(fixture);
+
+      await assert.rejects(() => applyPersonalPlanCutover({
+        manifestPath: prepared.manifestPath,
+        manifestDir: fixture.manifestDir,
+        repo: fixture.repo,
+        api: fixture.api,
+        config: {},
+        expectedWorkDate: WORK_DATE,
+      }), scenario.error);
+      assert.equal(fixture.api.deleteCalls.length, 0);
+      assert.deepEqual(fixture.repo.listAllFeishuLinks(), beforeLinks);
+    });
+  }
+});
+
 test("apply rejects duplicate, overlapping or unsigned manifest identities before remote calls", async (t) => {
   const mutators = [
     (manifest) => {

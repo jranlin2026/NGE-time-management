@@ -208,6 +208,17 @@ export async function applyPersonalPlanCutover({
 
   const state = localLinkState(repo, manifest);
   if (state === "applied") {
+    const snapshot = await readRemoteSnapshot(api, config);
+    const verified = classifyPersonalPlanCutover({
+      workDate: manifest.workDate,
+      retainedLocalTaskId: manifest.localIds.retained,
+      obsoleteLocalTaskId: manifest.localIds.obsolete,
+      targetLocalTaskId: manifest.localIds.target,
+      ...snapshot,
+      managedLinks: repo.listAllFeishuLinks(),
+      legacyTaskGuids: repo.listSentLegacyTaskGuids(),
+    });
+    if (verified.state !== "already_applied") throw new Error("cutover completed state is invalid");
     return {
       status: "already_applied",
       counts: { remoteDeleted: 0, alreadyMissing: 9, retainedLinks: 4, removedLinks: 0 },
