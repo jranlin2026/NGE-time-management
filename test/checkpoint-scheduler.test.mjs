@@ -220,6 +220,42 @@ test("keeps a task without checkpoints as one legacy block", () => {
   assert.deepEqual(result.deferred, []);
 });
 
+test("clears inherited deferral when every checkpoint is materialized", () => {
+  const task = {
+    id: "task-complete-plan",
+    checkpoints: [
+      {
+        title: "完成第一段",
+        minutes: 30,
+        startsAt: "2026-07-13T06:00:00.000Z",
+        endsAt: "2026-07-13T06:30:00.000Z",
+      },
+      {
+        title: "完成第二段",
+        minutes: 30,
+        startsAt: "2026-07-13T10:00:00.000Z",
+        endsAt: "2026-07-13T10:30:00.000Z",
+      },
+    ],
+  };
+  const result = materializeCheckpointSchedule({
+    schedule: {
+      ...dailySchedule([
+        parentBlock(task.id, "2026-07-13T06:00:00.000Z", "2026-07-13T07:00:00.000Z"),
+        parentBlock(task.id, "2026-07-13T10:00:00.000Z", "2026-07-13T11:00:00.000Z"),
+      ]),
+      deferred: [task.id],
+    },
+    tasks: [task],
+    date: DATE,
+    timezone: "Asia/Shanghai",
+    now: "2026-07-13T05:00:00.000Z",
+  });
+
+  assert.equal(result.blocks.length, 2);
+  assert.deepEqual(result.deferred, []);
+});
+
 test("moves stale explicit anchors around future anchors inside remaining capacity", () => {
   const schedule = dailySchedule([
     parentBlock("task-stale", "2026-07-13T10:00:00.000Z", "2026-07-13T11:00:00.000Z"),

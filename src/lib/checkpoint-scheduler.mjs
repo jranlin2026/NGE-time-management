@@ -36,6 +36,7 @@ export function materializeCheckpointSchedule({ schedule, tasks, date, timezone,
     });
     output.push(...materialized.blocks);
     if (materialized.incomplete) deferred.add(task.id);
+    else deferred.delete(task.id);
   }
 
   assertNoOverlap(output);
