@@ -13,6 +13,16 @@ test("maps midnight to the previous work date review", () => {
   });
 });
 
+test("keeps the overnight delay window on the previous day's review", () => {
+  assert.deepEqual(resolveCheckpointContext({ now: "2026-07-14T00:03:00+08:00", timezone: "Asia/Shanghai" }), {
+    workDate: "2026-07-13",
+    currentNode: "24:00",
+  });
+  assert.deepEqual(dueCheckpointNodes({
+    now: "2026-07-14T00:03:00+08:00", timezone: "Asia/Shanghai", completedNodes: [],
+  }).nodes, ["24:00"]);
+});
+
 test("resolves the greatest node not after local time", () => {
   assert.deepEqual(resolveCheckpointContext({ now: "2026-07-13T16:59:00+08:00", timezone: "Asia/Shanghai" }), {
     workDate: "2026-07-13",

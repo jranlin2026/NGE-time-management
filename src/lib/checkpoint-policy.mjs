@@ -283,7 +283,7 @@ function finalizeCheckpointReply(state, deps) {
     state.changed = false;
     return;
   }
-  const explicitChanges = changes.length ? changes : ["排程保持不变"];
+  const explicitChanges = changes.length ? changes : ["后面的时间不动，你继续往下做"];
   state.replyParts = [renderPlanDelta({
     node: state.node,
     facts,
@@ -312,18 +312,18 @@ function actionFacts(actions, tasks) {
     if (action.type === "checkpoint_completed") {
       const task = tasks.findById?.(action.taskId);
       const checkpoint = task?.checkpoints?.[action.checkpointIndex]?.title;
-      facts.push(`已同步完成关卡：${checkpoint || title}`);
-    } else if (action.type === "parent_completed") facts.push(`已同步主任务完成：${title}`);
-    else if (action.type === "evidence_required") facts.push("请补充验收证据");
-    else if (action.type === "task_feedback") facts.push(action.detail || "已收到进度反馈");
-    else if (action.type === "candidate_recorded") facts.push(`已进入候选池：${action.title}`);
-    else if (action.type === "not_scheduled") facts.push(`暂不安排：${action.title}。${action.rationale || "当前不占用核心执行时间。"}`);
-    else if (action.type === "task_created") facts.push(`${action.disposition === "interrupt_now" ? "已立即插入" : "已安排到今天"}：${title}`);
-    else if (action.type === "minimum_action") facts.push(`尚无可见进度，启动${action.minutes || 15}分钟动作：${action.title}`);
-    else if (action.type === "final_sprint") facts.push(`未完成关键交付：${title}`);
+      facts.push(`「${checkpoint || title}」已经完成，我接着替你往下排`);
+    } else if (action.type === "parent_completed") facts.push(`「${title}」已经完成`);
+    else if (action.type === "evidence_required") facts.push("还差一份验收凭证，补上就能算完成");
+    else if (action.type === "task_feedback") facts.push(action.detail || "进度我收到了");
+    else if (action.type === "candidate_recorded") facts.push("新想法我先替你收着，不打断你手上的事");
+    else if (action.type === "not_scheduled") facts.push(`「${action.title}」今天先不插队。${action.rationale || "先把核心结果做出来。"}`);
+    else if (action.type === "task_created") facts.push(`「${title}」${action.disposition === "interrupt_now" ? "得马上处理，我已插进计划" : "我已经放进今天的安排"}`);
+    else if (action.type === "minimum_action") facts.push(`先别想着全做完，给「${action.title}」${action.minutes || 15}分钟，开个头就行`);
+    else if (action.type === "final_sprint") facts.push(`「${title}」还差最后一段，今晚只盯它`);
     else if (action.type === "evening_trim") {
       const keptId = action.schedule?.blocks?.[0]?.taskId;
-      if (keptId) facts.push(`保留晚间工作：${taskTitle(tasks, keptId)}`);
+      if (keptId) facts.push(`今晚只保留「${taskTitle(tasks, keptId)}」，其他事先放下`);
     }
   }
   return facts.filter(Boolean);
@@ -336,13 +336,13 @@ function diffSchedule(previousSchedule, schedule, tasks, timezone) {
   for (const [identity, block] of previous) {
     const next = current.get(identity);
     if (!next) {
-      changes.push({ at: block.startsAt || "", text: `移除：${blockTitle(block, tasks)} ${formatInterval(block, timezone)}` });
+      changes.push({ at: block.startsAt || "", text: `「${blockTitle(block, tasks)}」今天先不硬塞` });
     } else if (block.startsAt !== next.startsAt || block.endsAt !== next.endsAt) {
-      changes.push({ at: next.startsAt || block.startsAt || "", text: `移动：${blockTitle(next, tasks)} ${formatInterval(block, timezone)}→${formatInterval(next, timezone)}` });
+      changes.push({ at: next.startsAt || block.startsAt || "", text: `「${blockTitle(next, tasks)}」改到 ${formatInterval(next, timezone)}` });
     }
   }
   for (const [identity, block] of current) {
-    if (!previous.has(identity)) changes.push({ at: block.startsAt || "", text: `新增：${blockTitle(block, tasks)} ${formatInterval(block, timezone)}` });
+    if (!previous.has(identity)) changes.push({ at: block.startsAt || "", text: `加上「${blockTitle(block, tasks)}」${formatInterval(block, timezone)}` });
   }
   return changes
     .sort((left, right) => left.at.localeCompare(right.at) || left.text.localeCompare(right.text))
@@ -371,7 +371,7 @@ function scheduleIdentity(block) {
 function blockTitle(block, tasks) {
   const task = tasks.findById?.(block.taskId) || tasks.listActive?.().find((item) => item.id === block.taskId);
   const checkpoint = task?.checkpoints?.[block.checkpointIndex]?.title;
-  return checkpoint ? `${task.title}｜${checkpoint}` : task?.title || block.taskId;
+  return checkpoint || task?.title || block.taskId;
 }
 
 function taskTitle(tasks, taskId) {

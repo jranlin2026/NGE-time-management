@@ -7,7 +7,10 @@ export function resolveCheckpointContext({ now = new Date(), timezone = "Asia/Sh
   if (Number.isNaN(instant.getTime())) throw new Error("valid checkpoint time is required");
   const local = localParts(instant, timezone);
   const workDate = `${local.year}-${local.month}-${local.day}`;
-  if (local.hour === 0 && local.minute === 0) {
+  // The 00:00 automation can begin a few minutes late. Until the next
+  // planning window opens at 08:00, the only due checkpoint is yesterday's
+  // review; otherwise a 00:03 run silently has no node to execute.
+  if (local.hour < 8) {
     return { workDate: addLocalDays(workDate, -1), currentNode: "24:00" };
   }
   const minuteOfDay = local.hour * 60 + local.minute;

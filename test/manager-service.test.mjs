@@ -401,7 +401,7 @@ test("12:00 concrete task feedback shrinks remaining scope before real replannin
     [1, "2026-07-10T06:00:00.000Z", "2026-07-10T06:30:00.000Z"],
   ]);
   assert.deepEqual(result.schedule.blocks, ops.currentSchedule("2026-07-10"));
-  assert.match(result.reply, /15:00.*14:30|15:00→14:30/);
+  assert.match(result.reply, /改到 14:00–14:30/);
   db.close();
 });
 

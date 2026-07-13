@@ -92,7 +92,7 @@ export function createCheckpointRunner(deps) {
                 await deps.ops.enqueueOutbox({
                   kind: "private_checkpoint_summary",
                   payload: {
-                    text: "计划已经生成，但飞书任务同步失败。\n当前不要按旧任务执行；系统将在下一节点重试，并在同步完成后发送最新版执行令。",
+                    text: "飞书任务这一下没同步上，先别照着旧任务跑。\n我正在重试；同步好后会直接告诉你下一步做什么。",
                     receiveId: deps.config.managerUserId,
                     receiveIdType: "open_id",
                   },

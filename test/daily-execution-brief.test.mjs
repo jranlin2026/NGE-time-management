@@ -39,14 +39,14 @@ test("renders one executable brief with four personal outcomes and a chronologic
     doNotDo: ["不研究出海", "不新增项目"],
   });
 
-  assert.match(text, /【7月13日执行令｜今天只完成4个结果】/);
+  assert.match(text, /【7月13日，今天只盯4个结果】/);
   assert.match(text, /10:00–10:15｜确认三主播排班、货盘和成交口径/);
   assert.match(text, /14:00–14:30｜确认线索字段、权限与操作流程/);
-  assert.match(text, /完成标准：1名员工完成真实线索操作/);
-  assert.match(text, /12:00–14:00｜午休，不安排任务/);
-  assert.match(text, /今天不做/);
-  assert.match(text, /反馈节点：12:00、15:00、18:00、21:00、24:00/);
-  assert.match(text, /卡住：任务名｜原因/);
+  assert.match(text, /做到：1名员工完成真实线索操作/);
+  assert.match(text, /12:00–14:00先休息/);
+  assert.match(text, /今天先别碰/);
+  assert.match(text, /我会在 12:00、15:00、18:00、21:00、24:00 主动找你对一次进度/);
+  assert.match(text, /卡住了直接回我卡在哪/);
   assert.doesNotMatch(text, /你直播14小时|你完成直播30单/);
 });
 
@@ -87,8 +87,8 @@ test("renders the earliest incomplete scheduled checkpoint as the explicit first
 
   const text = renderDailyExecutionBrief({ date: DATE, schedule, tasks: [task], timezone: TIMEZONE });
 
-  assert.match(text, /【立即开始】\n现在第一步：完成3条口播提纲/);
-  assert.doesNotMatch(text, /现在第一步：确定3个选题与开头钩子/);
+  assert.match(text, /先从这一步开始：完成3条口播提纲/);
+  assert.doesNotMatch(text, /先从这一步开始：确定3个选题与开头钩子/);
 });
 
 test("falls back to the task next action when the earliest block has no valid checkpoint", () => {
@@ -100,7 +100,7 @@ test("falls back to the task next action when the earliest block has no valid ch
 
   const text = renderDailyExecutionBrief({ date: DATE, schedule, tasks: [task], timezone: TIMEZONE });
 
-  assert.match(text, /【立即开始】\n现在第一步：打开脚本库并写出第一个钩子/);
+  assert.match(text, /先从这一步开始：打开脚本库并写出第一个钩子/);
 });
 
 test("excludes unknown and deferred tasks from the outcome count and labels deferred partial blocks", () => {
@@ -123,7 +123,7 @@ test("excludes unknown and deferred tasks from the outcome count and labels defe
     timezone: TIMEZONE,
   });
 
-  assert.match(text, /【7月13日执行令｜今天只完成2个结果】/);
+  assert.match(text, /【7月13日，今天只盯2个结果】/);
   assert.match(text, /10:15–10:35｜确定3个选题与开头钩子（部分进度，等待重排）/);
   assert.doesNotMatch(text, /unknown/);
 });
@@ -146,8 +146,8 @@ test("uses checkpoint zero and falls back for null or out-of-range checkpoint in
   const text = renderDailyExecutionBrief({ date: DATE, schedule, tasks: [task], timezone: TIMEZONE });
 
   assert.match(text, /10:15–10:35｜确定3个选题与开头钩子/);
-  assert.equal(occurrences(text, `工作内容：${task.nextAction}`), 2);
-  assert.equal(occurrences(text, `完成标准：${task.doneDefinition}`), 2);
+  assert.equal(occurrences(text, task.nextAction), 2);
+  assert.equal(occurrences(text, `做到：${task.doneDefinition}`), 2);
 });
 
 test("does not duplicate a project prefix and renders midnight as 24:00 without mutating inputs", () => {
@@ -184,7 +184,7 @@ test("parses the date heading directly instead of shifting it through UTC", () =
     timezone: "America/Los_Angeles",
   });
 
-  assert.match(text, /【1月1日执行令｜今天只完成0个结果】/);
+  assert.match(text, /【1月1日，今天只盯0个结果】/);
 });
 
 test("renders an exact change-only checkpoint message", () => {
@@ -197,11 +197,11 @@ test("renders an exact change-only checkpoint message", () => {
   });
 
   assert.equal(text, [
-    "【12:00计划调整】",
-    "事实：个人IP拍摄提前40分钟完成",
-    "调整：18:30发布验收提前到11:20–11:50",
-    "现在只做：把3条原片和标题交给剪辑人员",
-    "反馈截止：12:00",
+    "【12:00，我帮你把后面顺了一下】",
+    "个人IP拍摄提前40分钟完成",
+    "后面改成：18:30发布验收提前到11:20–11:50",
+    "现在先做：把3条原片和标题交给剪辑人员",
+    "做到这一步，12:00前告诉我结果就行。",
   ].join("\n"));
 });
 

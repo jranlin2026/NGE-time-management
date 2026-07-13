@@ -18,9 +18,9 @@ test("08:00 private reply is a full brief in the configured local timezone", asy
   assert.equal(day.feishu.privateReplies.length, 1);
   const text = day.feishu.privateReplies[0].text;
   assert.match(text, /11:00–11:30/);
-  assert.match(text, /工作内容/);
-  assert.match(text, /完成标准/);
-  assert.match(text, /反馈规则/);
+  assert.match(text, /今天按这个节奏走/);
+  assert.match(text, /做到：提交可发布的口播视频/);
+  assert.match(text, /卡住了直接回我卡在哪/);
 });
 
 test("one day flows from merged DMs through subtasks and review", async (t) => {

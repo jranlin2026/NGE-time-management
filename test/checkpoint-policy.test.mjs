@@ -76,9 +76,9 @@ test("08:00 sends the full executable brief", async () => {
   });
 
   assert.match(result.reply, /10:15–10:35/);
-  assert.match(result.reply, /工作内容/);
-  assert.match(result.reply, /完成标准/);
-  assert.match(result.reply, /反馈规则/);
+  assert.match(result.reply, /今天按这个节奏走/);
+  assert.match(result.reply, /做到：提交口播脚本初稿/);
+  assert.match(result.reply, /卡住了直接回我卡在哪/);
 });
 
 test("09:00 stays silent without messages or changes", async () => {
@@ -150,10 +150,10 @@ test("12:00 early completion adds one high-value action and retains the buffer",
     remoteProgress: { completedTasks: [], completedCheckpoints: [{ localTaskId: "completed", checkpointIndex: 0, completedAt: "2026-07-13T03:30:00.000Z" }] },
   });
 
-  assert.match(result.reply, /录制高价值视频/);
-  assert.equal(result.reply.match(/新增：/gu)?.length, 1);
-  assert.match(result.reply, /现在只做：/);
-  assert.match(result.reply, /反馈截止：15:00/);
+  assert.match(result.reply, /录制第一条/);
+  assert.equal(result.reply.match(/加上「/gu)?.length, 1);
+  assert.match(result.reply, /现在先做：/);
+  assert.match(result.reply, /15:00前告诉我结果/);
   assert.equal(result.schedule.blocks[0].startsAt, "2026-07-13T06:00:00.000Z");
 });
 
@@ -167,16 +167,16 @@ test("12:00 delay reduces scope and reports the new end time", async () => {
   });
 
   assert.match(result.reply, /只录一条/);
-  assert.match(result.reply, /15:00→14:30|15:00.*14:30/);
-  assert.match(result.reply, /现在只做：/);
-  assert.match(result.reply, /反馈截止：15:00/);
+  assert.match(result.reply, /改到 14:00–14:30/);
+  assert.match(result.reply, /现在先做：/);
+  assert.match(result.reply, /15:00前告诉我结果/);
 });
 
 test("candidate ideas never interrupt a doing task", async () => {
   const result = await policyFixture({ doingTask: task({ status: "doing" }) }).policy
     .apply({ node: "15:00", workDate: "2026-07-13", messages: [{ messageId: "om-1" }], analysis: { items: [{ messageIds: ["om-1"], disposition: "candidate_pool", title: "新选题" }] }, remoteProgress: emptyProgress });
   assert.equal(result.actions.some((item) => item.type === "interrupt_current"), false);
-  assert.match(result.reply, /候选池/);
+  assert.match(result.reply, /新想法我先替你收着/);
 });
 
 test("an ungrounded interrupt is downgraded and cannot interrupt current work", async () => {
@@ -187,7 +187,7 @@ test("an ungrounded interrupt is downgraded and cannot interrupt current work", 
   });
   assert.equal(fixture.created.length, 0);
   assert.equal(result.actions.some((item) => item.type === "interrupt_current"), false);
-  assert.match(result.reply, /候选池/);
+  assert.match(result.reply, /新想法我先替你收着/);
 });
 
 test("a grounded P0 interrupts only when a different task is doing", async () => {
@@ -205,7 +205,7 @@ test("do-not-schedule inputs are explained in the one merged reply", async () =>
     analysis: { items: [{ disposition: "do_not_schedule", title: "低价值整理", rationale: "可以委派给员工" }] },
   });
   assert.equal(result.replyRequired, true);
-  assert.match(result.reply, /暂不安排.*可以委派给员工/);
+  assert.match(result.reply, /今天先不插队.*可以委派给员工/);
 });
 
 test("21:00 keeps one core task through midnight", async () => {
@@ -294,9 +294,9 @@ test("15:00 replans a new task even while preserving a doing task", async () => 
   assert.equal(fixture.replans.length, 1);
   assert.deepEqual(result.schedule.blocks.map((block) => block.taskId), ["doing", fixture.created[0].id]);
   assert.deepEqual(result.schedule.blocks[0], doingBlock);
-  assert.match(result.reply, /现在只做：/);
-  assert.match(result.reply, /反馈截止：18:00/);
-  assert.doesNotMatch(result.reply, /移动：完成口播/);
+  assert.match(result.reply, /现在先做：/);
+  assert.match(result.reply, /18:00前告诉我结果/);
+  assert.doesNotMatch(result.reply, /改到.*完成口播/);
 });
 
 test("18:00 lists kept and removed evening work", async () => {
@@ -315,9 +315,9 @@ test("18:00 lists kept and removed evening work", async () => {
   assert.equal(fixture.replans.at(-1).maxCriticalTasks, 1);
   assert.equal(fixture.replans.at(-1).now, now);
   assert.match(result.reply, /交付今日脚本/);
-  assert.match(result.reply, /移除.*整理低价值素材/);
-  assert.match(result.reply, /现在只做：/);
-  assert.match(result.reply, /反馈截止：21:00/);
+  assert.match(result.reply, /今天先不硬塞/);
+  assert.match(result.reply, /现在先做：/);
+  assert.match(result.reply, /21:00前告诉我结果/);
 });
 
 test("21:00 keeps one final outcome with an absolute deadline", async () => {
@@ -327,8 +327,8 @@ test("21:00 keeps one final outcome with an absolute deadline", async () => {
     node: "21:00", workDate: "2026-07-13", messages: [], analysis: { items: [] }, remoteProgress: emptyProgress,
   });
   assert.equal(result.schedule.blocks.length, 1);
-  assert.match(result.reply, /现在只做：.*写脚本/);
-  assert.match(result.reply, /反馈截止：24:00/);
+  assert.match(result.reply, /现在先做：.*写脚本/);
+  assert.match(result.reply, /24:00前告诉我结果/);
   assert.doesNotMatch(result.reply, /今日胜利条件|反馈规则/);
 });
 
@@ -339,7 +339,7 @@ test("21:00 selects a final block ending at next-day midnight", async () => {
     node: "21:00", workDate: "2026-07-13", messages: [], analysis: { items: [] }, remoteProgress: emptyProgress,
   });
 
-  assert.match(result.reply, /现在只做：完成发布/);
+  assert.match(result.reply, /现在先做：完成发布/);
   assert.match(result.reply, /23:30–24:00/);
   assert.doesNotMatch(result.reply, /23:30–00:00/);
 });
@@ -353,9 +353,9 @@ test("21:00 sends final sprint for an unchanged unfinished critical outcome", as
   });
 
   assert.equal(result.replyRequired, true);
-  assert.match(result.reply, /未完成关键交付/);
-  assert.match(result.reply, /现在只做：导出最终版/);
-  assert.match(result.reply, /反馈截止：24:00/);
+  assert.match(result.reply, /还差最后一段/);
+  assert.match(result.reply, /现在先做：导出最终版/);
+  assert.match(result.reply, /24:00前告诉我结果/);
   assert.doesNotMatch(result.reply, /今日胜利条件|反馈规则/);
 });
 
@@ -370,7 +370,7 @@ test("remote parent completion is routed through manager acceptance handling fir
     action: "complete", taskId: "deliverable", date: "2026-07-13", now, idempotencyKey: "feishu-parent:deliverable:2026-07-13T03:00:00.000Z", deliveryMode: "task_dm", suppressOutbox: true,
   });
   assert.equal(result.replyRequired, true);
-  assert.match(result.reply, /已同步主任务完成.*验收证据/);
+  assert.match(result.reply, /已经完成.*验收凭证/);
 });
 
 test("24:00 checkpoint completion replans the prior work date", async () => {

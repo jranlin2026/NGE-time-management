@@ -49,7 +49,7 @@ test("task sync failure sends one private warning and keeps the run failed", asy
   const warnings = fixture.outbox.filter((row) => row.idempotencyKey === "private-sync-failure:2026-07-13:12:00");
   assert.equal(warnings.length, 1);
   assert.equal(warnings[0].kind, "private_checkpoint_summary");
-  assert.equal(warnings[0].payload.text, "计划已经生成，但飞书任务同步失败。\n当前不要按旧任务执行；系统将在下一节点重试，并在同步完成后发送最新版执行令。");
+  assert.equal(warnings[0].payload.text, "飞书任务这一下没同步上，先别照着旧任务跑。\n我正在重试；同步好后会直接告诉你下一步做什么。");
   assert.equal(fixture.runStatuses.get("2026-07-13:12:00"), "failed");
 });
 
