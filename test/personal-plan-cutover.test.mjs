@@ -581,6 +581,29 @@ test("prepare and apply require the approved target task before any remote delet
   assert.equal(disappearsBeforeDelete.api.deleteCalls.length, 0);
 });
 
+test("prepare binds children to the managed parent when Feishu omits parent_guid", async (t) => {
+  const fixture = await cutoverFixture(t);
+  for (const children of Object.values(fixture.api.children)) {
+    for (const child of children) delete child.parent_guid;
+  }
+
+  const prepared = await preparePersonalPlanCutover(fixture.prepareOptions);
+  const manifest = JSON.parse(await fs.readFile(prepared.manifestPath, "utf8"));
+  for (const tree of [manifest.retainedTree, manifest.obsoleteTree]) {
+    assert.equal(tree.children.every((child) => child.parentGuid === tree.parent.guid), true);
+  }
+
+  const applied = await applyPersonalPlanCutover({
+    manifestPath: prepared.manifestPath,
+    manifestDir: fixture.manifestDir,
+    repo: fixture.repo,
+    api: fixture.api,
+    config: {},
+    expectedWorkDate: WORK_DATE,
+  });
+  assert.equal(applied.status, "applied");
+});
+
 async function cutoverFixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "personal-plan-cutover-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

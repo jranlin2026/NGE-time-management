@@ -126,15 +126,16 @@ export function classifyPersonalPlanCutover({
     parents,
     childMap,
   });
+  const retainedSerialized = serializedTree(retainedTree);
+  const obsoleteSerialized = serializedTree(obsoleteTree);
 
   const legacyEntries = legacyParents.map(remoteEntry);
   const historyEntries = completedHistoricalParents.map(remoteEntry);
-  const obsoleteChildren = obsoleteTree.children
-    .map((task, index) => ({ ...remoteEntry(task), checkpointIndex: index }));
+  const obsoleteChildren = obsoleteSerialized.children;
   const deletionOrder = [
     ...legacyEntries.map((item) => ({ ...item, kind: "legacy_parent" })),
     ...obsoleteChildren.map((item) => ({ ...item, kind: "obsolete_child" })),
-    { ...remoteEntry(obsoleteTree.parent), kind: "obsolete_parent" },
+    { ...obsoleteSerialized.parent, kind: "obsolete_parent" },
   ];
 
   return {
@@ -142,8 +143,8 @@ export function classifyPersonalPlanCutover({
     localIds: { retained: retainedLocalTaskId, obsolete: obsoleteLocalTaskId, target: targetLocalTaskId },
     legacyParents: legacyEntries,
     completedHistoricalParents: historyEntries,
-    retainedTree: serializedTree(retainedTree),
-    obsoleteTree: serializedTree(obsoleteTree),
+    retainedTree: retainedSerialized,
+    obsoleteTree: obsoleteSerialized,
     deletionOrder,
     counts: {
       legacyParents: legacyEntries.length,
@@ -305,7 +306,11 @@ function serializedTree(tree) {
   return {
     links: tree.links,
     parent: remoteEntry(tree.parent),
-    children: tree.children.map((task, checkpointIndex) => ({ ...remoteEntry(task), checkpointIndex })),
+    children: tree.children.map((task, checkpointIndex) => ({
+      ...remoteEntry(task),
+      parentGuid: tree.parent.guid,
+      checkpointIndex,
+    })),
   };
 }
 
