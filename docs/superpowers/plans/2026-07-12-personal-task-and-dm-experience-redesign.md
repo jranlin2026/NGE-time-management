@@ -718,12 +718,43 @@ git commit -m "feat: seed clear personal execution plans"
 ### Task 8: Live Cutover, Duplicate Cleanup, and Acceptance
 
 **Files:**
+- Create: `src/lib/personal-plan-cutover.mjs`
+- Create: `scripts/cutover-personal-plan.mjs`
+- Create: `test/personal-plan-cutover.test.mjs`
+- Modify: `src/db/automation-repository.mjs`
+- Modify: `test/automation-repository.test.mjs`
+- Modify: `src/lib/checkpoint-runner.mjs`
+- Modify: `scripts/run-checkpoint.mjs`
+- Modify: `test/checkpoint-runner.test.mjs`
+- Modify: `src/lib/feishu-tasks.mjs`
+- Modify: `test/feishu-tasks.test.mjs`
 - Modify: `docs/development-status.md`
 - Runtime data only: ignored `.env`, SQLite database, Codex automation, LaunchAgent state, Feishu tasks.
 
 **Interfaces:**
 - Consumes: all code from Tasks 1–7.
 - Produces: four clear pending Feishu parent tasks for 2026-07-13, correct timed children, one full private brief, and no active legacy writer.
+
+- [ ] **Step 0: Build and test controlled cutover tooling before any live write**
+
+Add an optional validated `replayToken` to `checkpointRunner.run()` and `scripts/run-checkpoint.mjs`. It is allowed only with an explicit forced node, is included in the automation run key and private-summary idempotency key, and never changes the ordinary scheduled run key. The same replay token twice must be a no-op while the original completed `2026-07-13:08:00` audit row remains untouched.
+
+Add a dry-run-by-default cutover tool with two explicit phases:
+
+1. `prepare` reads the migrated local database and paginated Feishu task/subtask state, classifies exact candidates, and writes a mode-0600 manifest under ignored `data/cutover/`. It performs no deletion or link mutation.
+2. `apply --manifest=<path>` accepts only a previously prepared manifest, revalidates its work date and candidate signatures, deletes exact manifest GUIDs sequentially, then transactionally rebinds the retained personal-IP parent/child links to `wk20260713-personal-ip` and removes only the confirmed obsolete IP link rows.
+
+The preflight must require:
+
+- exactly five sent legacy-create GUIDs that are unlinked, incomplete, all-day and have zero subtasks;
+- exactly one retained personal-IP managed tree with one parent link and three child links;
+- exactly one obsolete personal-IP managed tree whose remote parent and exact three children match its four local links;
+- exactly five completed historical top-level parents;
+- the consolidated target initially has either zero links (not applied) or the exact retained four links (idempotent replay).
+
+Remote parent deletion must not assume child cascading: delete the obsolete managed tree's three exact children before its parent. Treat 404 as success only for a GUID in the private manifest. Never print GUIDs, user/chat identifiers or credentials in the JSON summary.
+
+Test the pure classifier, manifest validation, dry-run zero writes, exact link rebind/removal, partial-delete retry, replay-token run keys, private-summary keys, and identical-token idempotency. Run the full suite and independently review this tooling before Step 1.
 
 - [ ] **Step 1: Pause the Codex automation and identify the exact legacy job**
 
