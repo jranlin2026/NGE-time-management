@@ -161,6 +161,110 @@ test("clears a due-today linked outcome and unfinished children when the outcome
   assert.equal(fixture.api.createdChildren.length, 3);
 });
 
+test("clears a removed linked outcome with no local due date using its remote today interval", async () => {
+  const removedTask = {
+    id: "task-no-due",
+    title: "个人IP｜完成今日拍摄",
+    project: "个人IP",
+    nextAction: "确认选题",
+    estimateMinutes: 40,
+    dueAt: null,
+    doneDefinition: "完成今日拍摄",
+    status: "scheduled",
+    checkpoints: [
+      {
+        title: "确认选题",
+        minutes: 20,
+        startsAt: "2026-07-13T02:00:00.000Z",
+        endsAt: "2026-07-13T02:20:00.000Z",
+        completed: true,
+      },
+      { title: "拍摄原片", minutes: 20, completed: false },
+    ],
+  };
+  const schedule = { blocks: [
+    { taskId: removedTask.id, checkpointIndex: 0, startsAt: "2026-07-13T02:00:00.000Z", endsAt: "2026-07-13T02:20:00.000Z" },
+    { taskId: removedTask.id, checkpointIndex: 1, startsAt: "2026-07-13T02:20:00.000Z", endsAt: "2026-07-13T02:40:00.000Z" },
+  ] };
+  const fixture = detailedSyncFixture({ localTasks: [removedTask], schedule });
+
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+  fixture.api.remoteParents[0].start = { timestamp: String(Date.parse("2026-07-13T02:00:00.000Z")), is_all_day: false };
+  fixture.api.remoteParents[0].due = { timestamp: String(Date.parse("2026-07-13T02:40:00.000Z")), is_all_day: false };
+  schedule.blocks = [];
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+
+  assert.deepEqual(fixture.api.updated.map((item) => item.guid), ["parent-1", "parent-1-child-2"]);
+  for (const update of fixture.api.updated) {
+    const body = buildTaskUpdateBody(update.body);
+    assert.equal(body.task.start, null);
+    assert.equal(body.task.due, null);
+  }
+  assert.equal(fixture.api.createdChildren[0].startAt, "2026-07-13T02:00:00.000Z");
+  assert.equal(fixture.api.createdChildren[0].dueAt, "2026-07-13T02:20:00.000Z");
+});
+
+test("clears a removed linked outcome from its remote today interval after local due date changes", async () => {
+  const removedTask = {
+    id: "task-moved-due",
+    title: "极享OS｜完成今日验收",
+    project: "极享OS",
+    nextAction: "抽测主流程",
+    estimateMinutes: 30,
+    dueAt: "2026-07-13",
+    doneDefinition: "今日验收完成",
+    status: "scheduled",
+    checkpoints: [{ title: "抽测主流程", minutes: 30, completed: false }],
+  };
+  const schedule = { blocks: [{
+    taskId: removedTask.id,
+    checkpointIndex: 0,
+    startsAt: "2026-07-13T06:00:00.000Z",
+    endsAt: "2026-07-13T06:30:00.000Z",
+  }] };
+  const fixture = detailedSyncFixture({ localTasks: [removedTask], schedule });
+
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+  fixture.api.remoteParents[0].start = { timestamp: String(Date.parse("2026-07-13T06:00:00.000Z")), is_all_day: false };
+  fixture.api.remoteParents[0].due = { timestamp: String(Date.parse("2026-07-13T06:30:00.000Z")), is_all_day: false };
+  removedTask.dueAt = "2026-07-14";
+  schedule.blocks = [];
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+
+  assert.deepEqual(fixture.api.updated.map((item) => item.guid), ["parent-1", "parent-1-child-1"]);
+  assert.deepEqual(buildTaskUpdateBody(fixture.api.updated[0].body).task.start, null);
+  assert.deepEqual(buildTaskUpdateBody(fixture.api.updated[0].body).task.due, null);
+});
+
+test("does not clear a removed linked outcome whose remote interval belongs to a future day", async () => {
+  const futureTask = {
+    id: "task-future",
+    title: "个人IP｜准备明日选题",
+    project: "个人IP",
+    nextAction: "列出选题",
+    estimateMinutes: 30,
+    dueAt: null,
+    doneDefinition: "明日选题已准备",
+    status: "scheduled",
+    checkpoints: [{ title: "列出明日选题", minutes: 30, completed: false }],
+  };
+  const schedule = { blocks: [{
+    taskId: futureTask.id,
+    checkpointIndex: 0,
+    startsAt: "2026-07-14T02:00:00.000Z",
+    endsAt: "2026-07-14T02:30:00.000Z",
+  }] };
+  const fixture = detailedSyncFixture({ localTasks: [futureTask], schedule });
+
+  await fixture.sync.pushSchedule({ date: "2026-07-14", schedule });
+  fixture.api.remoteParents[0].start = { timestamp: String(Date.parse("2026-07-14T02:00:00.000Z")), is_all_day: false };
+  fixture.api.remoteParents[0].due = { timestamp: String(Date.parse("2026-07-14T02:30:00.000Z")), is_all_day: false };
+  schedule.blocks = [];
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+
+  assert.deepEqual(fixture.api.updated, []);
+});
+
 test("syncs each outcome once with detailed parent fields and its own timed checkpoint children", async () => {
   const fixture = detailedSyncFixture({
     localTasks: [

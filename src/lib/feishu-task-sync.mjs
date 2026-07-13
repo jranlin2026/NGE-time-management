@@ -67,7 +67,7 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
         }
         results.push({ localTaskId: localTask.id, parentGuid: parent.taskGuid });
       }
-      await clearRemovedTaskSchedules({ date, scheduledTaskIds: new Set(taskIds) });
+      await clearRemovedTaskSchedules({ date, scheduledTaskIds: new Set(taskIds), remoteParents });
       return { date, tasks: results };
     },
 
@@ -133,19 +133,22 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
     return existing;
   }
 
-  async function clearRemovedTaskSchedules({ date, scheduledTaskIds }) {
+  async function clearRemovedTaskSchedules({ date, scheduledTaskIds, remoteParents }) {
     if (typeof tasks?.listActive !== "function" || typeof links?.listAllFeishuLinks !== "function") return;
     const allLinks = links.listAllFeishuLinks();
     if (!Array.isArray(allLinks)) return;
     const linksByTask = Map.groupBy(allLinks, (link) => link.localTaskId);
+    const remoteParentsByGuid = new Map((remoteParents || []).map((task) => [task.guid, task]));
     const activeTasks = tasks.listActive();
     if (!Array.isArray(activeTasks)) return;
 
     for (const localTask of activeTasks) {
-      if (scheduledTaskIds.has(localTask.id) || String(localTask.dueAt || "").slice(0, 10) !== date) continue;
+      if (scheduledTaskIds.has(localTask.id)) continue;
       const taskLinks = linksByTask.get(localTask.id) || [];
       const parentLink = taskLinks.find((link) => link.checkpointIndex === -1);
       if (!parentLink) continue;
+      const remoteParent = remoteParentsByGuid.get(parentLink.taskGuid);
+      if (!wasRemotelyScheduledForDate(remoteParent, localTask, date, config.timezone)) continue;
 
       await updateLinkedRemote(parentLink, managedFields(
         localTask,
@@ -290,4 +293,37 @@ function extractGuid(response) {
 function completedAt(task) {
   const timestamp = Number(task?.completed_at);
   return timestamp > 0 ? new Date(timestamp).toISOString() : "";
+}
+
+function wasRemotelyScheduledForDate(remoteTask, localTask, date, timezone = "Asia/Shanghai") {
+  const start = remoteTaskInstant(remoteTask, "start");
+  const due = remoteTaskInstant(remoteTask, "due");
+  if (start || due) {
+    return (start && localDate(start, timezone) === date)
+      || (due && localDate(new Date(due.getTime() - 1), timezone) === date);
+  }
+  return String(localTask?.dueAt || "").slice(0, 10) === date;
+}
+
+function remoteTaskInstant(task, field) {
+  const camelField = field === "start" ? "startAt" : "dueAt";
+  const snakeField = field === "start" ? "start_at" : "due_at";
+  const value = task?.[field]?.timestamp ?? task?.[field] ?? task?.[camelField] ?? task?.[snakeField];
+  if (value == null || value === "") return null;
+  const numeric = Number(value);
+  const milliseconds = Number.isFinite(numeric)
+    ? (Math.abs(numeric) < 1e12 ? numeric * 1000 : numeric)
+    : Date.parse(value);
+  if (!Number.isFinite(milliseconds)) return null;
+  return new Date(milliseconds);
+}
+
+function localDate(value, timezone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
