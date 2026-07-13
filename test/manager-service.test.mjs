@@ -252,6 +252,155 @@ test("late replanning moves stale anchors after lunch and preserves future ancho
   db.close();
 });
 
+test("12:00 concrete task feedback shrinks remaining scope before real replanning", async () => {
+  const { db, tasks, ops, manager } = setup({
+    settings: {
+      timezone: "Asia/Shanghai",
+      windows: [["10:00", "12:00"], ["14:00", "18:00"]],
+      maxCriticalTasks: 3,
+      noResponseMinutes: 15,
+      projectBoosts: [],
+    },
+  });
+  tasks.create({
+    id: "delayed-video",
+    title: "个人IP｜录制3条口播",
+    rawInput: "录制3条口播",
+    status: "scheduled",
+    estimateMinutes: 60,
+    nextAction: "录制3条口播",
+    doneDefinition: "3条可剪辑原片已提交",
+    checkpoints: [
+      {
+        title: "完成3条口播提纲",
+        minutes: 30,
+        startsAt: "2026-07-10T02:00:00.000Z",
+        endsAt: "2026-07-10T02:30:00.000Z",
+        completed: true,
+      },
+      {
+        title: "录制3条可剪辑口播",
+        minutes: 60,
+        startsAt: "2026-07-10T06:00:00.000Z",
+        endsAt: "2026-07-10T07:00:00.000Z",
+        completed: false,
+      },
+    ],
+  });
+  ops.replaceSchedule({
+    date: "2026-07-10",
+    blocks: [{
+      taskId: "delayed-video",
+      checkpointIndex: 1,
+      startsAt: "2026-07-10T06:00:00.000Z",
+      endsAt: "2026-07-10T07:00:00.000Z",
+      status: "planned",
+      reason: "original scope",
+    }],
+  });
+  const policy = createCheckpointPolicy({
+    manager,
+    tasks,
+    timezone: "Asia/Shanghai",
+    getSchedule: (date) => ({ date, blocks: ops.currentSchedule(date) }),
+  });
+
+  const result = await policy.apply({
+    node: "12:00",
+    workDate: "2026-07-10",
+    now: "2026-07-10T04:00:00.000Z",
+    messages: [{ messageId: "om-delay", content: { text: "来不及拍3条了，今天缩减为先拍1条" } }],
+    remoteProgress: { completedTasks: [], completedCheckpoints: [] },
+    analysis: { items: [{
+      messageIds: ["om-delay"],
+      disposition: "task_feedback",
+      taskId: "delayed-video",
+      title: "缩减为录制1条口播",
+      nextAction: "录制1条可剪辑口播",
+      doneDefinition: "1条可剪辑原片已提交",
+      estimateMinutes: 30,
+      checkpoints: [{ title: "录制1条可剪辑口播", minutes: 30 }],
+    }] },
+  });
+
+  const updated = tasks.findById("delayed-video");
+  assert.equal(updated.estimateMinutes, 30);
+  assert.equal(updated.nextAction, "录制1条可剪辑口播");
+  assert.equal(updated.doneDefinition, "1条可剪辑原片已提交");
+  assert.deepEqual(updated.checkpoints, [
+    {
+      title: "完成3条口播提纲",
+      minutes: 30,
+      startsAt: "2026-07-10T02:00:00.000Z",
+      endsAt: "2026-07-10T02:30:00.000Z",
+      completed: true,
+    },
+    { title: "录制1条可剪辑口播", minutes: 30, completed: false },
+  ]);
+  assert.deepEqual(result.schedule.blocks.map((block) => [block.checkpointIndex, block.startsAt, block.endsAt]), [
+    [1, "2026-07-10T06:00:00.000Z", "2026-07-10T06:30:00.000Z"],
+  ]);
+  assert.deepEqual(result.schedule.blocks, ops.currentSchedule("2026-07-10"));
+  assert.match(result.reply, /15:00.*14:30|15:00→14:30/);
+  db.close();
+});
+
+test("unknown or vague task feedback stays a candidate and cannot erase scope", async () => {
+  const { db, tasks, ops, manager } = setup();
+  const original = tasks.create({
+    id: "protected-scope",
+    title: "个人IP｜完成口播原片",
+    rawInput: "完成口播原片",
+    status: "scheduled",
+    estimateMinutes: 60,
+    nextAction: "录制3条口播",
+    doneDefinition: "3条可剪辑原片已提交",
+    checkpoints: [
+      { title: "完成口播提纲", minutes: 30, completed: true },
+      { title: "录制3条口播", minutes: 60, completed: false },
+    ],
+  });
+  const policy = createCheckpointPolicy({
+    manager,
+    tasks,
+    timezone: "Asia/Shanghai",
+    getSchedule: (date) => ({ date, blocks: ops.currentSchedule(date) }),
+  });
+
+  const result = await policy.apply({
+    node: "09:00",
+    workDate: "2026-07-10",
+    now: "2026-07-10T01:00:00.000Z",
+    messages: [{ messageId: "om-unknown" }, { messageId: "om-vague" }],
+    remoteProgress: { completedTasks: [], completedCheckpoints: [] },
+    analysis: { items: [
+      {
+        disposition: "task_feedback",
+        taskId: "missing-task",
+        title: "缩减为录制1条口播",
+        nextAction: "录制1条可剪辑口播",
+        doneDefinition: "1条可剪辑原片已提交",
+        estimateMinutes: 30,
+        checkpoints: [{ title: "录制1条可剪辑口播", minutes: 30 }],
+      },
+      {
+        disposition: "task_feedback",
+        taskId: "protected-scope",
+        title: "继续处理",
+        nextAction: "处理一下",
+        doneDefinition: "完成",
+        estimateMinutes: 30,
+        checkpoints: [{ title: "处理一下", minutes: 30 }],
+      },
+    ] },
+  });
+
+  assert.deepEqual(tasks.findById("protected-scope"), original);
+  assert.equal(result.actions.filter((action) => action.type === "candidate_recorded").length, 2);
+  assert.equal(result.actions.some((action) => action.type === "task_feedback"), false);
+  db.close();
+});
+
 test("12:00 policy puts a new today disposition into the real capacity-limited schedule", async () => {
   const { db, tasks, ops, manager } = setup();
   const policy = createCheckpointPolicy({ manager, tasks });

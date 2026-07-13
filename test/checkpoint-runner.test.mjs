@@ -50,6 +50,26 @@ test("queues no reply for a quiet healthy 15:00 run", async () => {
   assert.equal(fixture.outbox.length, 0);
 });
 
+test("passes the logical checkpoint instant to progress reconciliation and policy", async () => {
+  let reconciliationInput;
+  let policyInput;
+  const fixture = runnerFixture({
+    reconcileRemoteProgress: async (input) => {
+      reconciliationInput = input;
+      return { actions: [], replyParts: [], changed: false };
+    },
+    applyPolicy: async (input) => {
+      policyInput = input;
+      return { replyRequired: false, reply: "", actions: [], schedule: { version: 1, blocks: [] } };
+    },
+  });
+
+  await fixture.runner.run({ now: "2026-07-13T12:00:00+08:00", forcedNode: "12:00" });
+
+  assert.equal(reconciliationInput.now, "2026-07-13T04:00:00.000Z");
+  assert.equal(policyInput.now, "2026-07-13T04:00:00.000Z");
+});
+
 test("an overlapping runner performs no writes", async () => {
   const fixture = runnerFixture({ lockHeld: true });
   const result = await fixture.runner.run({ now: "2026-07-13T18:00:00+08:00" });

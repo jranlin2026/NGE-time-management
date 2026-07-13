@@ -78,10 +78,10 @@ export function createCheckpointRunner(deps) {
             }) || analysisContext;
           }
           const progress = await deps.policy.reconcileRemoteProgress({
-            node, workDate, messages: analysisBatch, remoteProgress,
+            node, workDate, now: pollThrough, messages: analysisBatch, remoteProgress,
           });
           const result = await deps.policy.apply({
-            node, workDate, messages: analysisBatch, analysis, remoteProgress,
+            node, workDate, now: pollThrough, messages: analysisBatch, analysis, remoteProgress,
             remoteProgressApplied: true,
             prelude: progress,
           });

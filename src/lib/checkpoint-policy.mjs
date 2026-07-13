@@ -117,8 +117,19 @@ async function applyDeterministicItems(state, deps) {
       state.actions.push({ type: "evidence_submitted", taskId });
       state.changed = true;
     } else if (item.disposition === "task_feedback") {
-      state.actions.push({ type: "task_feedback", taskId: item.taskId || null, detail: item.nextAction || item.title });
+      const updated = await applyTaskFeedback(item, deps.tasks);
+      if (!updated) {
+        state.actions.push({
+          type: "candidate_recorded",
+          title: item.title || "待确认的任务反馈",
+          reason: "unknown_or_invalid_task_feedback",
+        });
+        state.changed = true;
+        continue;
+      }
+      state.actions.push({ type: "task_feedback", taskId: updated.id, detail: updated.nextAction });
       state.changed = true;
+      state.feedbackUpdated = true;
     } else if (item.disposition === "candidate_pool") {
       state.actions.push({ type: "candidate_recorded", title: item.title });
       state.changed = true;
@@ -149,11 +160,12 @@ async function createActionableTasks(state, deps) {
 }
 
 async function replanCreatedTasks(state, deps) {
-  if (!state.tasksCreated || state.node === "08:00" || state.node === "24:00") return;
+  if ((!state.tasksCreated && !state.feedbackUpdated) || state.node === "08:00" || state.node === "24:00") return;
   const options = {
     date: state.workDate,
     reason: `checkpoint_${state.node}`,
     deliveryMode: "task_dm",
+    ...(state.now ? { now: state.now } : {}),
   };
   if (EVENING_NODES.has(state.node)) options.maxCriticalTasks = 1;
   state.schedule = await deps.manager.replanDay(options);
@@ -388,6 +400,66 @@ function taskInput(item, itemIndex) {
       completed: false,
     })),
   };
+}
+
+async function applyTaskFeedback(item, tasks) {
+  if (typeof item?.taskId !== "string" || !item.taskId.trim()
+    || typeof tasks?.findById !== "function" || typeof tasks?.update !== "function") return null;
+  const current = tasks.findById(item.taskId);
+  if (!current || ["done", "cancelled"].includes(current.status)) return null;
+  const patch = feedbackScopePatch(item, current);
+  if (!patch) return null;
+  return tasks.update(current.id, patch);
+}
+
+function feedbackScopePatch(item, current) {
+  const nextAction = cleanText(item.nextAction);
+  const doneDefinition = cleanText(item.doneDefinition);
+  const estimateMinutes = Number(item.estimateMinutes);
+  const completed = (current.checkpoints || []).filter((checkpoint) => checkpoint.completed);
+  const remaining = Array.isArray(item.checkpoints) ? item.checkpoints : [];
+  if (!isConcreteFeedbackText(nextAction)
+    || !isConcreteFeedbackText(doneDefinition)
+    || !Number.isInteger(estimateMinutes) || estimateMinutes < 1 || estimateMinutes > 480
+    || remaining.length < 1 || completed.length + remaining.length > 8) return null;
+
+  const checkpoints = [];
+  let checkpointMinutes = 0;
+  for (const checkpoint of remaining) {
+    if (!checkpoint || typeof checkpoint !== "object" || Array.isArray(checkpoint)
+      || Object.keys(checkpoint).some((field) => !["title", "minutes"].includes(field))) return null;
+    const title = cleanText(checkpoint.title);
+    const minutes = Number(checkpoint.minutes);
+    if (!isConcreteCheckpointTitle(title)
+      || !Number.isInteger(minutes) || minutes < 15 || minutes > 45) return null;
+    checkpoints.push({ title, minutes, completed: false });
+    checkpointMinutes += minutes;
+  }
+  if (checkpointMinutes !== estimateMinutes) return null;
+  return {
+    nextAction,
+    doneDefinition,
+    estimateMinutes,
+    checkpoints: [...completed, ...checkpoints],
+  };
+}
+
+function isConcreteFeedbackText(value) {
+  const text = cleanText(value);
+  if (text.length < 4 || /(?:一下|相关内容|所有工作|全部工作|整个项目|项目进度|这个事情|这件事)/u.test(text)) return false;
+  return /(?:写出|列出|确定|完成|提交|发布|录制|拍摄|修复|验证|确认|整理|记录|创建|生成|发送|更新|删除|安装|配置|测试|复核|对比|标注|导出|实现|交付|已提交|已发布|已完成)/u.test(text);
+}
+
+function isConcreteCheckpointTitle(value) {
+  const text = cleanText(value);
+  if (!isConcreteFeedbackText(text)) return false;
+  const hasBoundedQuantity = /\d+\s*(?:个|条|份|页|次|张|段|分钟|小时|版|项|家|人)/u.test(text);
+  const hasObservableResult = /(?:脚本|文案|视频|原片|截图|链接|页面|模块|测试|记录|清单|提纲|开头|结尾|代码|需求|方案|数据|名单|日志|复现步骤|案例|口播)/u.test(text);
+  return hasBoundedQuantity || hasObservableResult;
+}
+
+function cleanText(value) {
+  return typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : "";
 }
 
 function stableDigest(...parts) {
