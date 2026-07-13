@@ -13,6 +13,7 @@ import { createAutomationRepository } from "../src/db/automation-repository.mjs"
 import { createOutboxWorker } from "../src/lib/outbox-worker.mjs";
 import { createManagerService } from "../src/lib/manager-service.mjs";
 import { createCheckpointPolicy } from "../src/lib/checkpoint-policy.mjs";
+import { createReminderEngine } from "../src/lib/reminder-engine.mjs";
 
 test("commits messages only after sync and reply queueing succeed", async () => {
   const fixture = runnerFixture({ messages: [message("om-1", "新增一个选题")] });
@@ -308,7 +309,12 @@ test("pre-atomic finalization failure retries the original batch and outbox iden
   assert.deepEqual(fixture.pending, []);
 });
 
-test("real failed-run retry applies grounded task feedback once without another schedule or DM", async () => {
+function realFeedbackRetryFixture({
+  crashAfterFeedback = false,
+  crashAfterScheduleCommit = false,
+  crashAfterSummary = false,
+  failPushOnce = false,
+} = {}) {
   const now = "2026-07-13T04:00:00.000Z";
   const db = openDatabase(":memory:");
   let sequence = 0;
@@ -316,7 +322,7 @@ test("real failed-run retry applies grounded task feedback once without another 
   const tasks = createTaskRepository(db, { now: () => now, id });
   const ops = createOperationsRepository(db, { now: () => now, id });
   const storedRuntime = createAutomationRepository(db, { now: () => now, claimToken: id });
-  let failFinalize = true;
+  let failFinalize = crashAfterSummary;
   const runtime = {
     ...storedRuntime,
     finalizeInbound(input) {
@@ -333,16 +339,25 @@ test("real failed-run retry applies grounded task feedback once without another 
     if (Object.hasOwn(patch, "checkpoints")) feedbackUpdates += 1;
     return update(taskId, patch);
   };
-  const manager = createManagerService({
+  const managerAnalyzer = {
+    analyzeTask: async () => assert.fail("ordinary analysis is outside this retry"),
+    minimumAction: async () => ({ action: "先录制第一条口播", minutes: 15 }),
+  };
+  let baseManager;
+  const reminderEngine = createReminderEngine({
+    tasks,
+    ops,
+    analyzer: managerAnalyzer,
+    replan: (input) => baseManager.replanDay({ reason: input.reason, now: input.now }),
+    clock: { now: () => new Date(now) },
+  });
+  baseManager = createManagerService({
     db,
     transaction: (fn) => withTransaction(db, fn),
     tasks,
     ops,
-    analyzer: {
-      analyzeTask: async () => assert.fail("ordinary analysis is outside this retry"),
-      minimumAction: async () => ({ action: "先录制第一条口播", minutes: 15 }),
-    },
-    reminderEngine: { scheduleTask() {} },
+    analyzer: managerAnalyzer,
+    reminderEngine,
     clock: { now: () => new Date(now) },
     settings: {
       timezone: "Asia/Shanghai",
@@ -352,6 +367,18 @@ test("real failed-run retry applies grounded task feedback once without another 
       projectBoosts: [],
     },
   });
+  let failFeedback = crashAfterFeedback;
+  const manager = {
+    ...baseManager,
+    applyTaskFeedback(input) {
+      const result = baseManager.applyTaskFeedback(input);
+      if (failFeedback) {
+        failFeedback = false;
+        throw new Error("crash after feedback commit before replan");
+      }
+      return result;
+    },
+  };
   tasks.create({
     id: "video-task",
     title: "个人IP｜录制3条口播",
@@ -385,6 +412,18 @@ test("real failed-run retry applies grounded task feedback once without another 
     status: "planned",
     reason: "original scope",
   }] });
+  if (crashAfterScheduleCommit) {
+    const replaceSchedule = ops.replaceSchedule.bind(ops);
+    let failScheduleCommit = true;
+    ops.replaceSchedule = (input) => {
+      const result = replaceSchedule(input);
+      if (failScheduleCommit && input.event) {
+        failScheduleCommit = false;
+        throw new Error("crash after schedule commit before reminders");
+      }
+      return result;
+    };
+  }
   const policy = createCheckpointPolicy({
     manager,
     tasks,
@@ -396,6 +435,7 @@ test("real failed-run retry applies grounded task feedback once without another 
   let analyzerCalls = 0;
   let pushes = 0;
   let deliveries = 0;
+  let failPush = failPushOnce;
   const worker = createOutboxWorker({
     ops,
     clock: { now: () => new Date(now) },
@@ -408,7 +448,14 @@ test("real failed-run retry applies grounded task feedback once without another 
     pollMessages: async () => [source],
     taskSync: {
       pullProgress: async () => ({ completedTasks: [], completedCheckpoints: [] }),
-      pushSchedule: async () => { pushes += 1; return { tasks: [] }; },
+      pushSchedule: async () => {
+        pushes += 1;
+        if (failPush) {
+          failPush = false;
+          throw new Error("crash after replan before private summary");
+        }
+        return { tasks: [] };
+      },
     },
     analyzer: {
       analyzeCheckpointMessages: async () => {
@@ -434,26 +481,146 @@ test("real failed-run retry applies grounded task feedback once without another 
     owner: () => "retry-runner",
   });
 
+  return {
+    now,
+    db,
+    tasks,
+    ops,
+    runner,
+    stats: () => ({ analyzerCalls, feedbackUpdates, pushes, deliveries }),
+  };
+}
+
+test("real failed-run retry applies grounded task feedback once without another schedule or DM", async () => {
+  const fixture = realFeedbackRetryFixture({ crashAfterSummary: true });
+
   try {
     await assert.rejects(
-      runner.run({ now, forcedNode: "12:00" }),
+      fixture.runner.run({ now: fixture.now, forcedNode: "12:00" }),
       /crash after main summary delivery/,
     );
-    const afterFirst = tasks.findById("video-task");
-    await runner.run({ now, forcedNode: "12:00" });
+    const afterFirst = fixture.tasks.findById("video-task");
+    await fixture.runner.run({ now: fixture.now, forcedNode: "12:00" });
 
-    assert.equal(analyzerCalls, 1);
-    assert.equal(feedbackUpdates, 1);
-    assert.deepEqual(tasks.findById("video-task"), afterFirst);
-    assert.deepEqual([...new Set(ops.listScheduleHistory("2026-07-13").map((block) => block.version))], [1, 2]);
-    assert.equal(ops.listEvents({ taskId: "video-task", kind: "task_feedback_applied" }).length, 1);
-    assert.equal(ops.listOutbox().filter((row) => row.kind === "private_checkpoint_summary").length, 1);
-    assert.equal(deliveries, 1);
-    assert.equal(pushes, 2);
+    assert.deepEqual(fixture.stats(), { analyzerCalls: 1, feedbackUpdates: 1, pushes: 2, deliveries: 1 });
+    assert.deepEqual(fixture.tasks.findById("video-task"), afterFirst);
+    assert.deepEqual([...new Set(fixture.ops.listScheduleHistory("2026-07-13").map((block) => block.version))], [1, 2]);
+    assert.equal(fixture.ops.listEvents({ taskId: "video-task", kind: "task_feedback_applied" }).length, 1);
+    assert.equal(fixture.ops.listOutbox().filter((row) => row.kind === "private_checkpoint_summary").length, 1);
   } finally {
-    db.close();
+    fixture.db.close();
   }
 });
+
+test("real retry resumes the one required replan after feedback committed before a crash", async () => {
+  const fixture = realFeedbackRetryFixture({ crashAfterFeedback: true });
+
+  try {
+    await assert.rejects(
+      fixture.runner.run({ now: fixture.now, forcedNode: "12:00" }),
+      /crash after feedback commit before replan/,
+    );
+    assert.deepEqual(fixture.stats(), { analyzerCalls: 1, feedbackUpdates: 1, pushes: 0, deliveries: 0 });
+    assert.deepEqual([...new Set(fixture.ops.listScheduleHistory("2026-07-13").map((block) => block.version))], [1]);
+    assert.equal(fixture.ops.listEvents({ taskId: "video-task", kind: "task_feedback_applied" }).length, 1);
+
+    await fixture.runner.run({ now: fixture.now, forcedNode: "12:00" });
+
+    assert.deepEqual(fixture.stats(), { analyzerCalls: 1, feedbackUpdates: 1, pushes: 1, deliveries: 1 });
+    assert.deepEqual([...new Set(fixture.ops.listScheduleHistory("2026-07-13").map((block) => block.version))], [1, 2]);
+    assert.equal(fixture.ops.listEvents({ taskId: "video-task", kind: "task_feedback_applied" }).length, 1);
+    assert.equal(fixture.ops.listOutbox().filter((row) => row.kind === "private_checkpoint_summary").length, 1);
+  } finally {
+    fixture.db.close();
+  }
+});
+
+test("real retry reuses the feedback schedule and delivers one summary after pre-summary failure", async () => {
+  const fixture = realFeedbackRetryFixture({ failPushOnce: true });
+
+  try {
+    await assert.rejects(
+      fixture.runner.run({ now: fixture.now, forcedNode: "12:00" }),
+      /crash after replan before private summary/,
+    );
+    assert.deepEqual([...new Set(fixture.ops.listScheduleHistory("2026-07-13").map((block) => block.version))], [1, 2]);
+
+    await fixture.runner.run({ now: fixture.now, forcedNode: "12:00" });
+
+    assert.deepEqual(fixture.stats(), { analyzerCalls: 1, feedbackUpdates: 1, pushes: 2, deliveries: 2 });
+    assert.deepEqual([...new Set(fixture.ops.listScheduleHistory("2026-07-13").map((block) => block.version))], [1, 2]);
+    const mainSummaries = fixture.ops.listOutbox().filter((row) => row.kind === "private_checkpoint_summary"
+      && !row.idempotencyKey.startsWith("private-sync-failure:"));
+    assert.equal(mainSummaries.length, 1);
+    assert.equal(mainSummaries[0].status, "sent");
+    assert.equal(fixture.ops.listEvents({ taskId: "video-task", kind: "task_feedback_applied" }).length, 1);
+  } finally {
+    fixture.db.close();
+  }
+});
+
+test("real retry restores reminders after the feedback schedule commits before a crash", async () => {
+  const fixture = realFeedbackRetryFixture({ crashAfterScheduleCommit: true });
+
+  try {
+    await assert.rejects(
+      fixture.runner.run({ now: fixture.now, forcedNode: "12:00" }),
+      /crash after schedule commit before reminders/,
+    );
+    assert.deepEqual([...new Set(fixture.ops.listScheduleHistory("2026-07-13").map((block) => block.version))], [1, 2]);
+    assert.equal(fixture.ops.listReminders({ taskId: "video-task" }).length, 0);
+
+    await fixture.runner.run({ now: fixture.now, forcedNode: "12:00" });
+
+    const reminders = fixture.ops.listReminders({ taskId: "video-task" });
+    assert.equal(reminders.length, 3);
+    assert.equal(reminders.every((reminder) => reminder.status === "pending"), true);
+    assert.equal(reminders.every((reminder) => reminder.idempotencyKey.includes(":2:")), true);
+    assert.deepEqual([...new Set(fixture.ops.listScheduleHistory("2026-07-13").map((block) => block.version))], [1, 2]);
+    assert.deepEqual(fixture.stats(), { analyzerCalls: 1, feedbackUpdates: 1, pushes: 1, deliveries: 1 });
+  } finally {
+    fixture.db.close();
+  }
+});
+
+test("real 08:00 feedback retry reuses the one daily dispatch schedule", async () => {
+  const fixture = realFeedbackRetryFixture({ crashAfterSummary: true });
+
+  try {
+    await assert.rejects(
+      fixture.runner.run({ now: fixture.now, forcedNode: "08:00" }),
+      /crash after main summary delivery/,
+    );
+    await fixture.runner.run({ now: fixture.now, forcedNode: "08:00" });
+
+    assert.deepEqual([...new Set(fixture.ops.listScheduleHistory("2026-07-13").map((block) => block.version))], [1, 2]);
+    assert.deepEqual(fixture.stats(), { analyzerCalls: 1, feedbackUpdates: 1, pushes: 2, deliveries: 1 });
+    const dispatchEvents = fixture.ops.listEvents({ kind: "daily_plan_created" })
+      .filter((event) => event.idempotencyKey.startsWith("task-feedback-replan:"));
+    assert.equal(dispatchEvents.length, 1);
+  } finally {
+    fixture.db.close();
+  }
+});
+
+for (const node of ["18:00", "21:00"]) {
+  test(`real ${node} feedback retry reuses the one evening schedule`, async () => {
+    const fixture = realFeedbackRetryFixture({ crashAfterSummary: true });
+
+    try {
+      await assert.rejects(
+        fixture.runner.run({ now: fixture.now, forcedNode: node }),
+        /crash after main summary delivery/,
+      );
+      await fixture.runner.run({ now: fixture.now, forcedNode: node });
+
+      assert.deepEqual([...new Set(fixture.ops.listScheduleHistory("2026-07-13").map((block) => block.version))], [1, 2]);
+      assert.deepEqual(fixture.stats(), { analyzerCalls: 1, feedbackUpdates: 1, pushes: 2, deliveries: 1 });
+    } finally {
+      fixture.db.close();
+    }
+  });
+}
 
 test("refuses to queue a private summary without the owner open_id", async () => {
   const fixture = runnerFixture({ messages: [message("om-1", "新增任务")], managerUserId: "" });

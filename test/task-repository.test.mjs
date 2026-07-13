@@ -205,6 +205,54 @@ test("replaces schedules by version without deleting history", () => {
   db.close();
 });
 
+test("reuses the exact schedule version for an idempotent replan event", () => {
+  const { db, tasks, ops } = setup();
+  tasks.create({ id: "task-1", rawInput: "拍视频" });
+  const event = {
+    kind: "schedule_replanned",
+    payload: { reason: "checkpoint_12:00", taskIds: ["task-1"] },
+    idempotencyKey: "feedback-replan:event-1",
+  };
+  const first = ops.replaceSchedule({
+    date: "2026-07-10",
+    blocks: [{
+      taskId: "task-1",
+      startsAt: "2026-07-10T02:00:00.000Z",
+      endsAt: "2026-07-10T02:30:00.000Z",
+      reason: "first plan",
+    }],
+    event,
+  });
+  const duplicate = ops.replaceSchedule({
+    date: "2026-07-10",
+    blocks: [{
+      taskId: "task-1",
+      startsAt: "2026-07-10T03:00:00.000Z",
+      endsAt: "2026-07-10T03:30:00.000Z",
+      reason: "must not replace the committed plan",
+    }],
+    event,
+  });
+
+  assert.equal(first.version, 1);
+  assert.equal(duplicate.version, 1);
+  assert.deepEqual(duplicate.blocks, first.blocks);
+  assert.equal(ops.listScheduleHistory("2026-07-10").length, 1);
+  assert.deepEqual(ops.findEventByIdempotencyKey(event.idempotencyKey).payload, {
+    reason: "checkpoint_12:00",
+    taskIds: ["task-1"],
+    date: "2026-07-10",
+    version: 1,
+    blockCount: 1,
+  });
+  assert.throws(() => ops.replaceSchedule({
+    date: "2026-07-11",
+    blocks: [],
+    event,
+  }), /idempotent schedule event does not match/);
+  db.close();
+});
+
 test("imports legacy Markdown tasks once", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "time-manager-legacy-"));
   await writeTasks(dir, [{ id: "legacy-1", title: "确认直播复盘", project: "个人IP", status: "open", estimateMinutes: 45 }]);

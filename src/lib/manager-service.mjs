@@ -255,36 +255,58 @@ export function createManagerService(deps) {
     const { reason = "manual", date = null, now = null } = options;
     const currentNow = now ? new Date(now) : nowDate();
     const scheduleDate = date || localDate(currentNow, settings.timezone);
-    const scheduleSettings = options.maxCriticalTasks == null
-      ? settings
-      : { ...settings, maxCriticalTasks: options.maxCriticalTasks };
+    const isDailyPlan = reason === "daily_plan";
+    const scheduleEventKind = isDailyPlan ? "daily_plan_created" : "schedule_replanned";
     const activeTasks = tasks.listActive().filter((task) => task.status !== "deferred");
-    const existingBlocks = ops.currentSchedule(scheduleDate);
-    const hasCurrentBlock = existingBlocks.some((block) => block.status === "doing");
-    const result = hasCurrentBlock
-      ? replanRemaining({
-        schedule: { date: scheduleDate, blocks: existingBlocks },
-        now: currentNow.toISOString(),
-        tasks: activeTasks,
-        settings: scheduleSettings,
-      })
-      : buildDailySchedule({
+    let stored = null;
+    if (options.idempotencyKey) {
+      stored = ops.findScheduleByIdempotencyKey(options.idempotencyKey, {
         date: scheduleDate,
-        now: currentNow.toISOString(),
-        tasks: activeTasks,
-        settings: scheduleSettings,
+        kind: scheduleEventKind,
+        payload: { reason },
       });
-    const checkpointSchedule = materializeCheckpointSchedule({
-      schedule: result,
-      tasks: activeTasks,
-      date: scheduleDate,
-      timezone: settings.timezone,
-      now: currentNow.toISOString(),
-    });
-
-    for (const task of activeTasks) ops.cancelPendingReminders(task.id);
-    const stored = ops.replaceSchedule({ date: scheduleDate, blocks: checkpointSchedule.blocks });
-    const selectedIds = new Set(checkpointSchedule.blocks.map((block) => block.taskId));
+    }
+    let checkpointSchedule = { deferred: [], reasons: {}, capacityWarnings: [] };
+    if (!stored) {
+      const scheduleSettings = options.maxCriticalTasks == null
+        ? settings
+        : { ...settings, maxCriticalTasks: options.maxCriticalTasks };
+      const existingBlocks = ops.currentSchedule(scheduleDate);
+      const hasCurrentBlock = existingBlocks.some((block) => block.status === "doing");
+      const result = hasCurrentBlock
+        ? replanRemaining({
+          schedule: { date: scheduleDate, blocks: existingBlocks },
+          now: currentNow.toISOString(),
+          tasks: activeTasks,
+          settings: scheduleSettings,
+        })
+        : buildDailySchedule({
+          date: scheduleDate,
+          now: currentNow.toISOString(),
+          tasks: activeTasks,
+          settings: scheduleSettings,
+        });
+      checkpointSchedule = materializeCheckpointSchedule({
+        schedule: result,
+        tasks: activeTasks,
+        date: scheduleDate,
+        timezone: settings.timezone,
+        now: currentNow.toISOString(),
+      });
+      const plannedTaskIds = [...new Set(checkpointSchedule.blocks.map((block) => block.taskId))];
+      stored = ops.replaceSchedule({
+        date: scheduleDate,
+        blocks: checkpointSchedule.blocks,
+        ...(options.idempotencyKey ? {
+          event: {
+            kind: scheduleEventKind,
+            payload: { reason, taskIds: plannedTaskIds },
+            idempotencyKey: options.idempotencyKey,
+          },
+        } : {}),
+      });
+    }
+    const selectedIds = new Set(stored.blocks.map((block) => block.taskId));
     for (const taskId of selectedIds) {
       const selectedTask = tasks.findById(taskId);
       if (["inbox", "open", "ready", "deferred"].includes(selectedTask.status)) {
@@ -307,6 +329,15 @@ export function createManagerService(deps) {
       }
     }
 
+    const reminderKeysByTask = new Map(activeTasks.map((task) => [task.id, []]));
+    for (const block of stored.blocks) {
+      const keys = reminderKeysByTask.get(block.taskId) || [];
+      keys.push(...scheduleReminderKeys(block.taskId, stored.version, block.startsAt));
+      reminderKeysByTask.set(block.taskId, keys);
+    }
+    for (const task of activeTasks) {
+      ops.cancelPendingRemindersExcept(task.id, reminderKeysByTask.get(task.id) || []);
+    }
     for (const block of stored.blocks) {
       const task = tasks.findById(block.taskId);
       reminderEngine.scheduleTask(task, block.startsAt, stored.version, settings.noResponseMinutes || 15);
@@ -321,7 +352,6 @@ export function createManagerService(deps) {
         reason: block.reason,
       };
     });
-    const isDailyPlan = reason === "daily_plan";
     if (options.deliveryMode !== "task_dm") {
       ops.enqueueOutbox({
         kind: isDailyPlan ? "daily_plan_card" : "replan_card",
@@ -333,11 +363,13 @@ export function createManagerService(deps) {
         idempotencyKey: `${isDailyPlan ? "daily-plan" : "replan"}:${scheduleDate}:${stored.version}`,
       });
     }
-    ops.appendEvent({
-      kind: isDailyPlan ? "daily_plan_created" : "schedule_replanned",
-      payload: { date: scheduleDate, version: stored.version, reason, taskIds: [...selectedIds] },
-      idempotencyKey: `schedule-event:${scheduleDate}:${stored.version}`,
-    });
+    if (!options.idempotencyKey) {
+      ops.appendEvent({
+        kind: scheduleEventKind,
+        payload: { date: scheduleDate, version: stored.version, reason, taskIds: [...selectedIds] },
+        idempotencyKey: `schedule-event:${scheduleDate}:${stored.version}`,
+      });
+    }
     return {
       ...stored,
       deferred: checkpointSchedule.deferred,
@@ -491,6 +523,15 @@ function normalizedCriticalTaskLimit(value) {
   const parsed = Number(value ?? 3);
   if (!Number.isFinite(parsed)) return 3;
   return Math.min(5, Math.max(0, Math.trunc(parsed)));
+}
+
+function scheduleReminderKeys(taskId, version, startsAt) {
+  const prefix = `${taskId}:${version}:${startsAt}`;
+  return [
+    `task-start:${prefix}`,
+    `no-response-1:${prefix}`,
+    `no-response-2:${prefix}`,
+  ];
 }
 
 function localDate(date, timezone) {

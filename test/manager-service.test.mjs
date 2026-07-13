@@ -671,6 +671,76 @@ test("task feedback rejects a structural shrink that would orphan a linked Feish
   db.close();
 });
 
+test("pure postponement feedback cannot rewrite scope until rescheduling is supported", async () => {
+  const { db, tasks, ops, manager } = setup();
+  const original = tasks.create({
+    id: "video-task",
+    title: "个人IP｜录制3条口播",
+    rawInput: "录制3条口播",
+    status: "scheduled",
+    estimateMinutes: 60,
+    nextAction: "录制3条口播",
+    doneDefinition: "3条可剪辑原片已提交",
+    checkpoints: [{ title: "录制3条可剪辑口播", minutes: 60, completed: false }],
+  });
+  const policy = createCheckpointPolicy({
+    manager,
+    tasks,
+    timezone: "Asia/Shanghai",
+    getSchedule: (date) => ({ date, blocks: ops.currentSchedule(date) }),
+  });
+
+  const result = await policy.apply({
+    node: "09:00",
+    workDate: "2026-07-10",
+    now: "2026-07-10T01:00:00.000Z",
+    messages: [{ messageId: "om-feedback", content: { text: "录制3条口播改到20点" } }],
+    remoteProgress: { completedTasks: [], completedCheckpoints: [] },
+    analysis: { items: [taskFeedback()] },
+  });
+
+  assert.deepEqual(tasks.findById("video-task"), original);
+  assert.equal(result.actions.some((action) => action.type === "task_feedback"), false);
+  assert.equal(result.actions.some((action) => action.type === "candidate_recorded"), true);
+  db.close();
+});
+
+test("24:00 review defers scope feedback instead of committing an unreplanned task", async () => {
+  const { db, tasks, ops, manager } = setup();
+  const original = tasks.create({
+    id: "video-task",
+    title: "个人IP｜录制3条口播",
+    rawInput: "录制3条口播",
+    status: "scheduled",
+    estimateMinutes: 60,
+    nextAction: "录制3条口播",
+    doneDefinition: "3条可剪辑原片已提交",
+    checkpoints: [{ title: "录制3条可剪辑口播", minutes: 60, completed: false }],
+  });
+  const policy = createCheckpointPolicy({
+    manager,
+    tasks,
+    timezone: "Asia/Shanghai",
+    getSchedule: (date) => ({ date, blocks: ops.currentSchedule(date) }),
+  });
+
+  const result = await policy.apply({
+    node: "24:00",
+    workDate: "2026-07-10",
+    now: "2026-07-10T16:00:00.000Z",
+    messages: [{ messageId: "om-feedback", content: { text: "来不及拍3条了，先拍1条" } }],
+    remoteProgress: { completedTasks: [], completedCheckpoints: [] },
+    analysis: { items: [taskFeedback()] },
+  });
+
+  assert.deepEqual(tasks.findById("video-task"), original);
+  assert.equal(ops.listEvents({ taskId: "video-task", kind: "task_feedback_applied" }).length, 0);
+  assert.equal(result.actions.some((action) => action.type === "candidate_recorded"
+    && action.reason === "task_feedback_rejected_at_review"), true);
+  assert.match(result.reply, /任务范围反馈未应用/);
+  db.close();
+});
+
 test("12:00 policy puts a new today disposition into the real capacity-limited schedule", async () => {
   const { db, tasks, ops, manager } = setup();
   const policy = createCheckpointPolicy({ manager, tasks });

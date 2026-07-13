@@ -119,6 +119,16 @@ async function applyDeterministicItems(state, deps) {
       state.actions.push({ type: "evidence_submitted", taskId });
       state.changed = true;
     } else if (item.disposition === "task_feedback") {
+      if (state.node === "24:00") {
+        state.actions.push({
+          type: "candidate_recorded",
+          title: item.title || "复盘节点收到的任务反馈",
+          reason: "task_feedback_rejected_at_review",
+        });
+        state.replyParts.push("任务范围反馈未应用：24:00 只做复盘，请在次日规划节点重新发送。");
+        state.changed = true;
+        continue;
+      }
       const feedback = await applyTaskFeedback(item, state, deps);
       if (!feedback) {
         state.actions.push({
@@ -131,8 +141,10 @@ async function applyDeterministicItems(state, deps) {
       }
       state.actions.push({ type: "task_feedback", taskId: feedback.task.id, detail: feedback.task.nextAction });
       state.changed = true;
-      if (feedback.action === "updated") state.feedbackUpdated = true;
-      else state.schedule ||= readSchedule(state, deps);
+      if (feedback.event.payload.changed === true) {
+        state.feedbackReplanKeys ||= [];
+        state.feedbackReplanKeys.push(feedback.event.idempotencyKey);
+      } else state.schedule ||= readSchedule(state, deps);
     } else if (item.disposition === "candidate_pool") {
       state.actions.push({ type: "candidate_recorded", title: item.title });
       state.changed = true;
@@ -163,19 +175,31 @@ async function createActionableTasks(state, deps) {
 }
 
 async function replanCreatedTasks(state, deps) {
-  if ((!state.tasksCreated && !state.feedbackUpdated) || state.node === "08:00" || state.node === "24:00") return;
+  const feedbackReplanKeys = [...new Set(state.feedbackReplanKeys || [])].sort();
+  if (!state.tasksCreated && !feedbackReplanKeys.length) return;
+  if (feedbackReplanKeys.length) {
+    state.feedbackReplanKey = `task-feedback-replan:${stableDigest(state.workDate, state.node, feedbackReplanKeys)}`;
+  }
+  if (state.node === "08:00" || state.node === "24:00") return;
   const options = {
     date: state.workDate,
     reason: `checkpoint_${state.node}`,
     deliveryMode: "task_dm",
     ...(state.now ? { now: state.now } : {}),
   };
+  if (state.feedbackReplanKey) options.idempotencyKey = state.feedbackReplanKey;
   if (EVENING_NODES.has(state.node)) options.maxCriticalTasks = 1;
   state.schedule = await deps.manager.replanDay(options);
+  state.nodeScheduleFinalized = true;
 }
 
 async function runDailyDispatch(state, deps) {
-  state.schedule = await deps.manager.dispatchDay({ date: state.workDate, deliveryMode: "task_dm" });
+  state.schedule = await deps.manager.dispatchDay({
+    date: state.workDate,
+    deliveryMode: "task_dm",
+    ...(state.now ? { now: state.now } : {}),
+    ...(state.feedbackReplanKey ? { idempotencyKey: state.feedbackReplanKey } : {}),
+  });
   state.replyParts.push(renderDailyExecutionBrief({
     date: state.workDate,
     schedule: state.schedule,
@@ -217,7 +241,9 @@ async function runAfternoonStartCheck(state, deps) {
 }
 
 async function runDayOutcomeCheck(state, deps) {
-  state.schedule = await deps.manager.replanDay({ date: state.workDate, ...(state.now ? { now: state.now } : {}), reason: "checkpoint_18:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
+  if (!state.nodeScheduleFinalized) {
+    state.schedule = await deps.manager.replanDay({ date: state.workDate, ...(state.now ? { now: state.now } : {}), reason: "checkpoint_18:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
+  }
   if (state.schedule.blocks.length || state.changed) {
     state.actions.push({ type: "evening_trim", schedule: state.schedule });
     state.changed = true;
@@ -225,7 +251,9 @@ async function runDayOutcomeCheck(state, deps) {
 }
 
 async function runFinalSprint(state, deps) {
-  state.schedule = await deps.manager.replanDay({ date: state.workDate, ...(state.now ? { now: state.now } : {}), reason: "checkpoint_21:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
+  if (!state.nodeScheduleFinalized) {
+    state.schedule = await deps.manager.replanDay({ date: state.workDate, ...(state.now ? { now: state.now } : {}), reason: "checkpoint_21:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
+  }
   const active = activeForProgress(deps.tasks.listActive());
   const doing = deps.tasks.findDoing?.() || active.find((task) => task.status === "doing");
   if (doing) {
@@ -426,7 +454,14 @@ async function applyTaskFeedback(item, state, deps) {
     messageIds: source.messageIds,
     idempotencyKey: `checkpoint-task-feedback:${stableDigest(current.id, source.messageIds)}`,
   });
-  if (!["updated", "unchanged", "duplicate"].includes(result?.action) || !result.task) return null;
+  const event = result?.event;
+  if (!["updated", "unchanged", "duplicate"].includes(result?.action) || !result.task
+    || event?.kind !== "task_feedback_applied"
+    || event.taskId !== current.id
+    || event.idempotencyKey !== `checkpoint-task-feedback:${stableDigest(current.id, source.messageIds)}`
+    || typeof event.payload?.changed !== "boolean"
+    || (result.action === "updated" && event.payload.changed !== true)
+    || (result.action === "unchanged" && event.payload.changed !== false)) return null;
   return result;
 }
 
@@ -500,9 +535,10 @@ function sourceMessageText(message) {
 
 function sourceRequestsFeedbackChange(value) {
   const text = cleanText(value);
-  const directChange = /(?:缩减|缩小|减少|减到|降到|砍掉|删掉|去掉|改成|改为|调整为|调整到|只(?:做|拍|录制|完成|保留)|先(?:做|拍|录制|完成)|推迟|延期|延后|顺延|挪到|改到|暂缓)/u;
+  const directChange = /(?:缩减|缩小|减少|减到|降到|砍掉|删掉|去掉|改成|改为|调整为|只(?:做|拍|录制|完成|保留)|先(?:做|拍|录制|完成))/u;
   return directChange.test(text)
-    || /(?:来不及|赶不及).{0,30}(?:先|只|改|缩|减|推迟|延期)/u.test(text);
+    || /(?:调整到|改到)\s*\d+\s*(?:个|条|份|页|次|张|段|分钟|小时|版|项|家|人)/u.test(text)
+    || /(?:来不及|赶不及).{0,30}(?:先|只|缩|减)/u.test(text);
 }
 
 function sourceIdentifiesTask(sourceText, target, tasks) {

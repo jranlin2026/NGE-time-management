@@ -13,6 +13,48 @@ export function createOperationsRepository(db, deps = {}) {
       .map(mapBlock);
   }
 
+  function scheduleAtVersion(date, version) {
+    return db
+      .prepare(`SELECT * FROM schedule_blocks
+        WHERE schedule_date = ? AND version = ? ORDER BY starts_at, id`)
+      .all(date, version)
+      .map(mapBlock);
+  }
+
+  function scheduleFromEvent(row, { date, kind = null, payload = {} } = {}) {
+    const event = mapEvent(row);
+    const version = Number(event.payload?.version);
+    const blockCount = Number(event.payload?.blockCount);
+    const payloadMatches = Object.entries(payload).every(([key, value]) =>
+      JSON.stringify(event.payload?.[key]) === JSON.stringify(value));
+    const blocks = Number.isInteger(version) && version > 0 ? scheduleAtVersion(date, version) : [];
+    if ((kind && event.kind !== kind)
+      || event.payload?.date !== date
+      || !Number.isInteger(version) || version < 1
+      || !Number.isInteger(blockCount) || blockCount < 0
+      || blocks.length !== blockCount
+      || latestScheduleVersion(date) !== version
+      || !payloadMatches) {
+      throw new Error("idempotent schedule event does not match requested replan");
+    }
+    return { date, version, blocks, event, reused: true };
+  }
+
+  function latestScheduleVersion(date) {
+    const blockVersion = Number(db
+      .prepare("SELECT coalesce(max(version), 0) AS version FROM schedule_blocks WHERE schedule_date = ?")
+      .get(date).version);
+    const eventVersion = db.prepare(`SELECT payload_json FROM task_events
+      WHERE kind IN ('schedule_replanned', 'daily_plan_created')`)
+      .all()
+      .reduce((maximum, row) => {
+        const payload = JSON.parse(row.payload_json);
+        const version = payload?.date === date ? Number(payload.version) : 0;
+        return Number.isInteger(version) ? Math.max(maximum, version) : maximum;
+      }, 0);
+    return Math.max(blockVersion, eventVersion);
+  }
+
   return {
     appendEvent({ taskId = null, kind, payload = {}, idempotencyKey = null, occurredAt = now() }) {
       const eventId = id();
@@ -41,12 +83,26 @@ export function createOperationsRepository(db, deps = {}) {
       const row = db.prepare("SELECT * FROM task_events WHERE idempotency_key = ?").get(key);
       return row ? mapEvent(row) : null;
     },
-    replaceSchedule({ date, blocks }) {
+    findScheduleByIdempotencyKey(key, expected = {}) {
+      if (!key) return null;
+      const row = db.prepare("SELECT * FROM task_events WHERE idempotency_key = ?").get(key);
+      return row ? scheduleFromEvent(row, expected) : null;
+    },
+    replaceSchedule({ date, blocks, event = null }) {
       return withTransaction(db, () => {
-        const previous = db
-          .prepare("SELECT coalesce(max(version), 0) AS version FROM schedule_blocks WHERE schedule_date = ?")
-          .get(date).version;
-        const version = previous + 1;
+        if (event && (!event.kind || !event.idempotencyKey
+          || !["schedule_replanned", "daily_plan_created"].includes(event.kind))) {
+          throw new Error("valid schedule event kind and idempotency key are required");
+        }
+        if (event?.idempotencyKey) {
+          const prior = db.prepare("SELECT * FROM task_events WHERE idempotency_key = ?").get(event.idempotencyKey);
+          if (prior) return scheduleFromEvent(prior, {
+            date,
+            kind: event.kind,
+            payload: { reason: event.payload?.reason },
+          });
+        }
+        const version = latestScheduleVersion(date) + 1;
         db.prepare(`UPDATE schedule_blocks SET replaced_by_version = ?
           WHERE schedule_date = ? AND replaced_by_version IS NULL`).run(version, date);
         const insert = db.prepare(`INSERT INTO schedule_blocks
@@ -58,7 +114,20 @@ export function createOperationsRepository(db, deps = {}) {
             block.status || "planned", block.reason, now(),
           );
         }
-        return { date, version, blocks: currentSchedule(date) };
+        let storedEvent = null;
+        if (event) {
+          const eventId = id();
+          db.prepare(`INSERT INTO task_events
+            (id,task_id,kind,payload_json,idempotency_key,occurred_at) VALUES (?,?,?,?,?,?)`)
+            .run(eventId, event.taskId || null, event.kind, JSON.stringify({
+              ...(event.payload || {}),
+              date,
+              version,
+              blockCount: blocks.length,
+            }), event.idempotencyKey, event.occurredAt || now());
+          storedEvent = mapEvent(db.prepare("SELECT * FROM task_events WHERE id = ?").get(eventId));
+        }
+        return { date, version, blocks: scheduleAtVersion(date, version), event: storedEvent, reused: false };
       });
     },
     currentSchedule,
@@ -109,6 +178,18 @@ export function createOperationsRepository(db, deps = {}) {
     },
     cancelPendingReminders(taskId) {
       return db.prepare("UPDATE reminders SET status='cancelled' WHERE task_id=? AND status IN ('pending','processing')").run(taskId).changes;
+    },
+    cancelPendingRemindersExcept(taskId, idempotencyKeys = []) {
+      const keys = [...new Set(idempotencyKeys.filter((key) => typeof key === "string" && key))];
+      if (!keys.length) {
+        return db.prepare("UPDATE reminders SET status='cancelled' WHERE task_id=? AND status IN ('pending','processing')")
+          .run(taskId).changes;
+      }
+      const placeholders = keys.map(() => "?").join(",");
+      return db.prepare(`UPDATE reminders SET status='cancelled'
+        WHERE task_id=? AND status IN ('pending','processing')
+        AND (idempotency_key IS NULL OR idempotency_key NOT IN (${placeholders}))`)
+        .run(taskId, ...keys).changes;
     },
     expireStaleReminders(at) {
       return db.prepare(`UPDATE reminders SET status='expired'
