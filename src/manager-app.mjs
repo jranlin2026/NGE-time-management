@@ -53,11 +53,12 @@ export function createManagerApp(config, deps = {}) {
   const db = deps.db || openDatabase(config.dbPath);
   const ownsDatabase = !deps.db;
   const clock = deps.clock || { now: () => new Date() };
+  const repositoryClock = { now: () => clock.now().toISOString() };
   const intervalFn = deps.setInterval || globalThis.setInterval;
   const clearIntervalFn = deps.clearInterval || globalThis.clearInterval;
-  const tasks = createTaskRepository(db);
-  const ops = createOperationsRepository(db);
-  const projectOps = createProjectOperationsRepository(db);
+  const tasks = createTaskRepository(db, repositoryClock);
+  const ops = createOperationsRepository(db, repositoryClock);
+  const projectOps = createProjectOperationsRepository(db, repositoryClock);
   const projectRepo = deps.projectRepo || createProjectMarkdownRepository({ kbDir: config.kbDir });
   const weeklyPlanRepo = deps.weeklyPlanRepo || createWeeklyPlanRepository({ kbDir: config.kbDir });
   if (!config.feishuReceiveId) {
@@ -224,7 +225,9 @@ export function createManagerApp(config, deps = {}) {
 export function createManagerRuntime(config, deps = {}) {
   const app = createManagerApp(config, deps);
   const state = app.state;
-  const automation = deps.automation || createAutomationRepository(state.db);
+  const automation = deps.automation || createAutomationRepository(state.db, {
+    now: () => (deps.clock?.now?.() || new Date()).toISOString(),
+  });
   const taskSync = deps.taskSync || createFeishuTaskSynchronizer({
     config,
     tasks: state.tasks,

@@ -6,7 +6,10 @@ import test from "node:test";
 import { createManagerRuntime } from "../src/manager-app.mjs";
 
 test("08:00 private reply is a full brief in the configured local timezone", async (t) => {
-  const day = e2eFixture({ timezone: "Asia/Tokyo" });
+  const day = e2eFixture({
+    timezone: "Asia/Tokyo",
+    clockNow: "2026-07-13T08:00:00+09:00",
+  });
   t.after(() => day.close());
   day.seedConfirmedDailyTask();
 
@@ -67,7 +70,7 @@ test("one day flows from merged DMs through subtasks and review", async (t) => {
   assert.match(review.renderedText, /完成子任务：1\/3/);
 });
 
-function e2eFixture({ timezone = "Asia/Shanghai" } = {}) {
+function e2eFixture({ timezone = "Asia/Shanghai", clockNow = "2026-07-13T08:00:00+08:00" } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "checkpoint-e2e-"));
   writeProject(directory);
   const messages = [];
@@ -115,6 +118,7 @@ function e2eFixture({ timezone = "Asia/Shanghai" } = {}) {
     async analyzeTask() { throw new Error("ordinary task analysis is outside this E2E"); },
     async analyzeAcceptance() { return { status: "accepted", explanation: "发布链接与交付项相关" }; },
   };
+  let currentClock = new Date(clockNow);
   const runtime = createManagerRuntime({
     dbPath: ":memory:",
     kbDir: directory,
@@ -131,6 +135,7 @@ function e2eFixture({ timezone = "Asia/Shanghai" } = {}) {
     },
   }, {
     analyzer,
+    clock: { now: () => new Date(currentClock) },
     feishuTaskApi: api,
     resolveChatId: async () => "oc-p2p",
     pollMessages: async ({ startTime, endTime }) => messages.filter((item) => {
@@ -147,6 +152,7 @@ function e2eFixture({ timezone = "Asia/Shanghai" } = {}) {
   });
   const runner = {
     run({ now }) {
+      currentClock = new Date(now);
       const local = new Intl.DateTimeFormat("en-GB", { timeZone: timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(now));
       return runtime.checkpointRunner.run({ now, forcedNode: local === "00:00" ? "24:00" : local });
     },
