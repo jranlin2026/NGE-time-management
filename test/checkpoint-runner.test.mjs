@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { createCheckpointRunner } from "../src/lib/checkpoint-runner.mjs";
+import { createCheckpointRunner, normalizeMessageTime } from "../src/lib/checkpoint-runner.mjs";
 import { openDatabase, withTransaction } from "../src/db/database.mjs";
 import { createTaskRepository } from "../src/db/task-repository.mjs";
 import { createOperationsRepository } from "../src/db/operations-repository.mjs";
@@ -23,6 +23,11 @@ test("commits messages only after sync and reply queueing succeed", async () => 
   assert.equal(fixture.outbox.filter((item) => item.kind === "private_checkpoint_summary").length, 1);
   assert.ok(fixture.calls.indexOf("push") < fixture.calls.indexOf("enqueue"));
   assert.ok(fixture.calls.indexOf("flush") < fixture.calls.indexOf("finalize"));
+});
+
+test("normalizes Feishu millisecond timestamps without moving messages into the far future", () => {
+  assert.equal(normalizeMessageTime("1783902600000"), "2026-07-13T00:30:00.000Z");
+  assert.equal(normalizeMessageTime("1783902600"), "2026-07-13T00:30:00.000Z");
 });
 
 test("leaves messages and cursor pending when task sync fails", async () => {
@@ -84,6 +89,23 @@ test("uses the invocation instant for catch-up scheduling while preserving messa
     ["08:00", "2026-07-13T01:00:00.000Z"],
     ["09:00", "2026-07-13T01:00:00.000Z"],
   ]);
+});
+
+test("continues today's node when a missed prior review is already behind the message cursor", async () => {
+  const fixture = runnerFixture({
+    completedNodes: ["08:00"],
+    initialCursor: "2026-07-13T05:14:42.000Z",
+    pollMessages: ({ startTime, endTime }) => {
+      assert.ok(startTime === undefined || startTime <= endTime, "must never ask Feishu for an inverted time range");
+      return [];
+    },
+  });
+
+  const result = await fixture.runner.run({ now: "2026-07-13T15:00:00+08:00" });
+
+  assert.deepEqual(result.nodes, ["24:00", "15:00"]);
+  assert.equal(fixture.polls.length, 1);
+  assert.equal(fixture.polls[0].endTime, Date.parse("2026-07-13T07:00:00.000Z") / 1000);
 });
 
 test("an overlapping runner performs no writes", async () => {
@@ -773,14 +795,14 @@ test("pre-recorded pending messages remain isolated by each catch-up cutoff", as
   assert.deepEqual(fixture.finalizedThrough, ["2026-07-12T16:00:00.000Z", "2026-07-13T00:00:00.000Z", "2026-07-13T01:00:00.000Z"]);
 });
 
-function runnerFixture({ messages = [], pendingMessages = [], pollMessages, completedNodes = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, reconcileProjectWrites, buildAnalysisContext, analyze, applyPolicy, pushSchedule, persistAnalysis = false, finalizeErrorOnce = false, executionNow, onClaimLock, initialRunStatuses = [], idempotentRuns = false } = {}) {
+function runnerFixture({ messages = [], pendingMessages = [], pollMessages, completedNodes = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, reconcileProjectWrites, buildAnalysisContext, analyze, applyPolicy, pushSchedule, persistAnalysis = false, finalizeErrorOnce = false, executionNow, onClaimLock, initialRunStatuses = [], idempotentRuns = false, initialCursor = null } = {}) {
   const calls = [];
   const claims = [];
   const polls = [];
   const outbox = [];
   const pending = [...pendingMessages];
   const finalizedThrough = [];
-  let cursor = null;
+  let cursor = initialCursor;
   let shouldFailFinalize = finalizeErrorOnce;
   const savedAnalyses = new Map();
   const runStatuses = new Map(initialRunStatuses);

@@ -46,11 +46,8 @@ export function createCheckpointRunner(deps) {
           activeRun = { runKey, claimToken: claim.claimToken };
 
           const cursor = await deps.runtime.getMessageCursor(chatId);
-          const polled = await deps.pollMessages({
-            chatId,
-            startTime: toEpochSeconds(cursor?.polledThrough),
-            endTime: toEpochSeconds(pollThrough),
-          });
+          const pollWindow = resolvePollWindow({ cursorThrough: cursor?.polledThrough, pollThrough });
+          const polled = pollWindow ? await deps.pollMessages({ chatId, ...pollWindow }) : [];
           const inbound = polled.map((message) => normalizeInbound(message, chatId));
           summary.messagesRead += inbound.length;
           await deps.runtime.recordInbound(inbound);
@@ -223,8 +220,14 @@ function normalizeInbound(message, chatId) {
   };
 }
 
-function normalizeMessageTime(value) {
-  if (/^\d+$/.test(String(value || ""))) return new Date(Number(value) * 1000).toISOString();
+export function normalizeMessageTime(value) {
+  const raw = String(value || "");
+  if (/^\d+$/.test(raw)) {
+    const numeric = Number(raw);
+    const milliseconds = raw.length >= 13 ? numeric : numeric * 1000;
+    const timestamp = new Date(milliseconds);
+    return Number.isNaN(timestamp.getTime()) ? new Date(0).toISOString() : timestamp.toISOString();
+  }
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? new Date(0).toISOString() : parsed.toISOString();
 }
@@ -232,6 +235,17 @@ function normalizeMessageTime(value) {
 function toEpochSeconds(value) {
   if (!value) return undefined;
   return Math.floor(new Date(value).getTime() / 1000);
+}
+
+function resolvePollWindow({ cursorThrough, pollThrough }) {
+  const startTime = toEpochSeconds(cursorThrough);
+  const endTime = toEpochSeconds(pollThrough);
+  if (!Number.isFinite(endTime)) throw new Error("valid poll end time is required");
+  if (Number.isFinite(startTime) && startTime > endTime) return null;
+  return {
+    ...(Number.isFinite(startTime) ? { startTime } : {}),
+    endTime,
+  };
 }
 
 function messageDigest(messages) {
