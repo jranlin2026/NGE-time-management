@@ -50,10 +50,11 @@ test("one day flows from merged DMs through subtasks and review", async (t) => {
   assert.equal(day.tasks.findById("task-video").checkpoints[0].completed, true);
   assert.match(day.events.find((event) => event.kind === "checkpoint_completed").idempotencyKey, /^feishu-checkpoint:child-/);
 
+  day.feishu.completeParent("2026-07-13T07:30:00.000Z");
   await day.runner.run({ now: "2026-07-13T18:00:00+08:00" });
   assert.equal(day.events.filter((event) => event.kind === "checkpoint_completed").length, 1);
+  assert.equal(day.tasks.findById("task-video").status, "pending_acceptance");
 
-  day.feishu.completeParent("2026-07-13T13:00:00.000Z");
   await day.runner.run({ now: "2026-07-13T21:00:00+08:00" });
   assert.equal(day.tasks.findById("task-video").status, "pending_acceptance");
 

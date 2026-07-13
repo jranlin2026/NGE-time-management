@@ -220,6 +220,79 @@ test("keeps a task without checkpoints as one legacy block", () => {
   assert.deepEqual(result.deferred, []);
 });
 
+test("moves stale explicit anchors around future anchors inside remaining capacity", () => {
+  const schedule = dailySchedule([
+    parentBlock("task-stale", "2026-07-13T10:00:00.000Z", "2026-07-13T11:00:00.000Z"),
+  ]);
+  const task = {
+    id: "task-stale",
+    checkpoints: [
+      {
+        title: "补做开播检查",
+        minutes: 15,
+        startsAt: "2026-07-13T02:00:00.000Z",
+        endsAt: "2026-07-13T02:15:00.000Z",
+      },
+      {
+        title: "检查中场数据",
+        minutes: 15,
+        startsAt: "2026-07-13T10:00:00.000Z",
+        endsAt: "2026-07-13T10:15:00.000Z",
+      },
+    ],
+  };
+
+  const result = materializeCheckpointSchedule({
+    schedule,
+    tasks: [task],
+    date: DATE,
+    timezone: TIMEZONE,
+    now: "2026-07-13T10:00:00.000Z",
+  });
+
+  assert.deepEqual(result.blocks.map((block) => [block.checkpointIndex, block.startsAt, block.endsAt]), [
+    [1, "2026-07-13T10:00:00.000Z", "2026-07-13T10:15:00.000Z"],
+    [0, "2026-07-13T10:15:00.000Z", "2026-07-13T10:30:00.000Z"],
+  ]);
+  assert.deepEqual(result.deferred, []);
+});
+
+test("completed explicit checkpoints keep history and do not consume stale replan capacity", () => {
+  const schedule = dailySchedule([
+    parentBlock("task-history", "2026-07-13T06:00:00.000Z", "2026-07-13T06:30:00.000Z"),
+  ]);
+  const task = {
+    id: "task-history",
+    checkpoints: [
+      {
+        title: "已完成上午检查",
+        minutes: 15,
+        startsAt: "2026-07-13T02:00:00.000Z",
+        endsAt: "2026-07-13T02:15:00.000Z",
+        completed: true,
+      },
+      {
+        title: "补做上午记录",
+        minutes: 30,
+        startsAt: "2026-07-13T02:15:00.000Z",
+        endsAt: "2026-07-13T02:45:00.000Z",
+      },
+    ],
+  };
+
+  const result = materializeCheckpointSchedule({
+    schedule,
+    tasks: [task],
+    date: DATE,
+    timezone: TIMEZONE,
+    now: "2026-07-13T04:00:00.000Z",
+  });
+
+  assert.deepEqual(result.blocks.map((block) => [block.checkpointIndex, block.startsAt, block.endsAt]), [
+    [1, "2026-07-13T06:00:00.000Z", "2026-07-13T06:30:00.000Z"],
+  ]);
+});
+
 function dailySchedule(blocks) {
   return { date: DATE, blocks, deferred: [], reasons: {}, capacityWarnings: [] };
 }

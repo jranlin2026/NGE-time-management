@@ -1,6 +1,15 @@
-export function materializeCheckpointSchedule({ schedule, tasks, date, timezone }) {
+export function materializeCheckpointSchedule({ schedule, tasks, date, timezone, now }) {
   const byId = new Map((tasks || []).map((task) => [task.id, task]));
   const parentBlocksByTask = groupBlocksByTask(schedule.blocks || []);
+  const selectedTaskIds = new Set(parentBlocksByTask.keys());
+  const nowTimestamp = optionalTimestamp(now);
+  const reservedIntervals = collectCurrentAndFutureAnchors({
+    tasks,
+    selectedTaskIds,
+    date,
+    timezone,
+    nowTimestamp,
+  });
   const materializedTaskIds = new Set();
   const deferred = new Set(schedule.deferred || []);
   const output = [];
@@ -20,6 +29,8 @@ export function materializeCheckpointSchedule({ schedule, tasks, date, timezone 
       checkpoints,
       date,
       timezone,
+      nowTimestamp,
+      reservedIntervals,
     });
     output.push(...materialized.blocks);
     if (materialized.incomplete) deferred.add(task.id);
@@ -33,10 +44,20 @@ export function materializeCheckpointSchedule({ schedule, tasks, date, timezone 
   };
 }
 
-function materializeTaskCheckpoints({ parentBlocks, checkpoints, date, timezone }) {
+function materializeTaskCheckpoints({
+  parentBlocks,
+  checkpoints,
+  date,
+  timezone,
+  nowTimestamp,
+  reservedIntervals,
+}) {
   const sortedParents = [...parentBlocks].sort(compareBlocks);
   const output = [];
-  let cursor = new Date(sortedParents[0].startsAt).getTime();
+  let cursor = Math.max(
+    new Date(sortedParents[0].startsAt).getTime(),
+    nowTimestamp ?? Number.NEGATIVE_INFINITY,
+  );
   let incomplete = false;
 
   for (const [checkpointIndex, checkpoint] of checkpoints.entries()) {
@@ -49,15 +70,17 @@ function materializeTaskCheckpoints({ parentBlocks, checkpoints, date, timezone 
         incomplete = true;
         continue;
       }
-      const source = sortedParents.find((block) => intervalStartsInBlock(start, block)) || sortedParents[0];
-      output.push(checkpointBlock(source, checkpointIndex, start, end));
-      cursor = Math.max(cursor, end.getTime());
-      continue;
+      if (nowTimestamp == null || end.getTime() > nowTimestamp) {
+        const source = sortedParents.find((block) => intervalStartsInBlock(start, block)) || sortedParents[0];
+        output.push(checkpointBlock(source, checkpointIndex, start, end));
+        cursor = Math.max(cursor, end.getTime());
+        continue;
+      }
     }
 
-    const minutes = Number(checkpoint.minutes || 15);
+    const minutes = checkpointMinutes(checkpoint);
     const slot = Number.isFinite(minutes) && minutes > 0
-      ? nextSequentialSlot(sortedParents, cursor, minutes)
+      ? nextSequentialSlot(sortedParents, cursor, minutes, reservedIntervals)
       : null;
     if (!slot) {
       incomplete = true;
@@ -70,12 +93,17 @@ function materializeTaskCheckpoints({ parentBlocks, checkpoints, date, timezone 
   return { blocks: output, incomplete };
 }
 
-function nextSequentialSlot(parentBlocks, cursor, minutes) {
+function nextSequentialSlot(parentBlocks, cursor, minutes, occupied = []) {
   const duration = minutes * 60_000;
   for (const parentBlock of parentBlocks) {
     const blockStart = new Date(parentBlock.startsAt).getTime();
     const blockEnd = new Date(parentBlock.endsAt).getTime();
-    const start = Math.max(blockStart, cursor);
+    let start = Math.max(blockStart, cursor);
+    for (const interval of occupied) {
+      if (interval.end <= start || interval.start >= blockEnd) continue;
+      if (start + duration <= interval.start) break;
+      start = Math.max(start, interval.end);
+    }
     if (start + duration <= blockEnd) {
       return {
         parentBlock,
@@ -85,6 +113,39 @@ function nextSequentialSlot(parentBlocks, cursor, minutes) {
     }
   }
   return null;
+}
+
+function collectCurrentAndFutureAnchors({ tasks, selectedTaskIds, date, timezone, nowTimestamp }) {
+  const intervals = [];
+  for (const task of tasks || []) {
+    if (!selectedTaskIds.has(task.id)) continue;
+    for (const checkpoint of task.checkpoints || []) {
+      if (checkpoint.completed || !checkpoint.startsAt || !checkpoint.endsAt) continue;
+      const start = new Date(checkpoint.startsAt);
+      const end = new Date(checkpoint.endsAt);
+      if (!validInterval(start, end) || !intervalFallsOnDate(start, end, date, timezone)) continue;
+      if (nowTimestamp != null && end.getTime() <= nowTimestamp) continue;
+      intervals.push({ start: start.getTime(), end: end.getTime() });
+    }
+  }
+  return intervals.sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
+function checkpointMinutes(checkpoint) {
+  const explicitMinutes = Number(checkpoint.minutes);
+  if (Number.isFinite(explicitMinutes) && explicitMinutes > 0) return explicitMinutes;
+  if (checkpoint.startsAt && checkpoint.endsAt) {
+    const duration = (new Date(checkpoint.endsAt) - new Date(checkpoint.startsAt)) / 60_000;
+    if (Number.isFinite(duration) && duration > 0) return duration;
+  }
+  return 15;
+}
+
+function optionalTimestamp(value) {
+  if (value == null || value === "") return null;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) throw new Error("valid checkpoint schedule time is required");
+  return timestamp;
 }
 
 function checkpointBlock(parentBlock, checkpointIndex, start, end) {

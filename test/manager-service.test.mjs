@@ -176,6 +176,52 @@ test("does not select or remind a task whose checkpoint is outside the work date
   db.close();
 });
 
+test("late replanning moves stale anchors after lunch and preserves future anchors", async () => {
+  const { db, tasks, ops, manager } = setup({
+    settings: {
+      timezone: "Asia/Shanghai",
+      windows: [["10:00", "12:00"], ["14:00", "18:00"]],
+      maxCriticalTasks: 3,
+      noResponseMinutes: 15,
+      projectBoosts: [],
+    },
+  });
+  tasks.create({
+    id: "late-anchored-task",
+    rawInput: "补做上午任务",
+    status: "ready",
+    estimateMinutes: 60,
+    checkpoints: [
+      {
+        title: "补做上午动作",
+        minutes: 30,
+        startsAt: "2026-07-10T02:00:00.000Z",
+        endsAt: "2026-07-10T02:30:00.000Z",
+      },
+      {
+        title: "保留下午验收",
+        minutes: 30,
+        startsAt: "2026-07-10T06:30:00.000Z",
+        endsAt: "2026-07-10T07:00:00.000Z",
+      },
+    ],
+  });
+
+  const result = await manager.replanDay({
+    date: "2026-07-10",
+    now: "2026-07-10T04:00:00.000Z",
+    deliveryMode: "task_dm",
+  });
+
+  assert.deepEqual(result.blocks.map((block) => [block.checkpointIndex, block.startsAt, block.endsAt]), [
+    [0, "2026-07-10T06:00:00.000Z", "2026-07-10T06:30:00.000Z"],
+    [1, "2026-07-10T06:30:00.000Z", "2026-07-10T07:00:00.000Z"],
+  ]);
+  assert.deepEqual(result.blocks, ops.currentSchedule("2026-07-10"));
+  assert.equal(result.blocks.some((block) => block.startsAt < "2026-07-10T06:00:00.000Z"), false);
+  db.close();
+});
+
 test("12:00 policy puts a new today disposition into the real capacity-limited schedule", async () => {
   const { db, tasks, ops, manager } = setup();
   const policy = createCheckpointPolicy({ manager, tasks });

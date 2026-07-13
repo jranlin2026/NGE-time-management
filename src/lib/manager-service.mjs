@@ -274,6 +274,7 @@ export function createManagerService(deps) {
       tasks: activeTasks,
       date: scheduleDate,
       timezone: settings.timezone,
+      now: currentNow.toISOString(),
     });
 
     for (const task of activeTasks) ops.cancelPendingReminders(task.id);
