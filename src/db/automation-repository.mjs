@@ -202,5 +202,62 @@ export function createAutomationRepository(db, deps = {}) {
       return db.prepare(`SELECT * FROM feishu_task_links WHERE local_task_id=? ORDER BY checkpoint_index`)
         .all(localTaskId).map(mapLink);
     },
+
+    listAllFeishuLinks() {
+      return db.prepare(`SELECT * FROM feishu_task_links ORDER BY local_task_id, checkpoint_index`)
+        .all().map(mapLink);
+    },
+
+    listSentLegacyTaskGuids() {
+      return db.prepare(`SELECT DISTINCT external_id FROM outbox
+        WHERE kind='feishu_task_create' AND status='sent' AND external_id IS NOT NULL AND external_id <> ''
+        ORDER BY external_id`).all().map((row) => row.external_id);
+    },
+
+    applyPersonalPlanLinkCutover({
+      retainedLocalTaskId,
+      obsoleteLocalTaskId,
+      targetLocalTaskId,
+      retainedLinks,
+      obsoleteLinks,
+    }) {
+      if (new Set([retainedLocalTaskId, obsoleteLocalTaskId, targetLocalTaskId]).size !== 3) {
+        throw new Error("cutover local task ids must be distinct");
+      }
+      return withTransaction(db, () => {
+        const list = (localTaskId) => db.prepare(`SELECT * FROM feishu_task_links
+          WHERE local_task_id=? ORDER BY checkpoint_index`).all(localTaskId).map(mapLink);
+        const retainedCurrent = list(retainedLocalTaskId);
+        const obsoleteCurrent = list(obsoleteLocalTaskId);
+        const targetCurrent = list(targetLocalTaskId);
+
+        if (sameLinkIdentity(targetCurrent, retainedLinks) && retainedCurrent.length === 0 && obsoleteCurrent.length === 0) {
+          return { status: "already_applied", retainedLinks: targetCurrent.length, removedLinks: 0 };
+        }
+        if (targetCurrent.length !== 0
+          || !sameLinkIdentity(retainedCurrent, retainedLinks)
+          || !sameLinkIdentity(obsoleteCurrent, obsoleteLinks)) {
+          throw new Error("cutover link identity changed");
+        }
+
+        const removed = db.prepare("DELETE FROM feishu_task_links WHERE local_task_id=?").run(obsoleteLocalTaskId).changes;
+        if (removed !== obsoleteLinks.length) throw new Error("cutover link identity changed");
+        const rebound = db.prepare(`UPDATE feishu_task_links SET local_task_id=?, updated_at=?
+          WHERE local_task_id=?`).run(targetLocalTaskId, now(), retainedLocalTaskId).changes;
+        if (rebound !== retainedLinks.length) throw new Error("cutover link identity changed");
+        return { status: "applied", retainedLinks: rebound, removedLinks: removed };
+      });
+    },
   };
+}
+
+function sameLinkIdentity(actual, expected) {
+  if (!Array.isArray(expected) || actual.length !== expected.length) return false;
+  return actual.every((link, index) => {
+    const candidate = expected[index];
+    return link.checkpointIndex === candidate?.checkpointIndex
+      && link.taskGuid === candidate?.taskGuid
+      && (link.parentGuid || null) === (candidate?.parentGuid || null)
+      && link.snapshotHash === (candidate?.snapshotHash || "");
+  });
 }

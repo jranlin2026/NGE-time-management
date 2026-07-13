@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createAutomationRepository } from "../src/db/automation-repository.mjs";
 import { openDatabase } from "../src/db/database.mjs";
+import { createTaskRepository } from "../src/db/task-repository.mjs";
 
 function fixture() {
   const db = openDatabase(":memory:");
@@ -197,3 +198,88 @@ test("persists one fenced batch analysis across failed-run reclaim", () => {
   assert.deepEqual(repo.saveRunAnalysis("run-analysis", resumed.claimToken, { messageIds: [], analysis: { items: [] } }), snapshot);
   db.close();
 });
+
+test("lists sent legacy task GUIDs and every managed Feishu link for cutover preflight", () => {
+  const { db, repo } = fixture();
+  const tasks = createTaskRepository(db);
+  tasks.create({ id: "retained-ip", title: "retained" });
+  repo.upsertFeishuLink({ localTaskId: "retained-ip", checkpointIndex: -1, taskGuid: "retained-parent" });
+  db.prepare(`INSERT INTO outbox
+    (id,kind,payload_json,idempotency_key,status,attempts,next_attempt_at,external_id,created_at,sent_at)
+    VALUES ('sent','feishu_task_create','{}','sent-key','sent',0,'2026-07-13T00:00:00.000Z',
+      'legacy-parent','2026-07-13T00:00:00.000Z','2026-07-13T00:00:01.000Z')`).run();
+  db.prepare(`INSERT INTO outbox
+    (id,kind,payload_json,idempotency_key,status,attempts,next_attempt_at,external_id,created_at)
+    VALUES ('pending','feishu_task_create','{}','pending-key','pending',0,'2026-07-13T00:00:00.000Z',
+      'not-sent','2026-07-13T00:00:00.000Z')`).run();
+
+  assert.deepEqual(repo.listSentLegacyTaskGuids(), ["legacy-parent"]);
+  assert.deepEqual(repo.listAllFeishuLinks().map((link) => [link.localTaskId, link.checkpointIndex]), [["retained-ip", -1]]);
+  db.close();
+});
+
+test("transactionally rebinds the exact retained tree and removes only the exact obsolete tree", () => {
+  const { db, repo } = fixture();
+  const tasks = createTaskRepository(db);
+  for (const id of ["retained-ip", "obsolete-ip", "wk20260713-personal-ip"]) tasks.create({ id, title: id });
+  const retained = treeLinks("retained-ip", "keep");
+  const obsolete = treeLinks("obsolete-ip", "drop");
+  for (const link of [...retained, ...obsolete]) repo.upsertFeishuLink(link);
+
+  const result = repo.applyPersonalPlanLinkCutover({
+    retainedLocalTaskId: "retained-ip",
+    obsoleteLocalTaskId: "obsolete-ip",
+    targetLocalTaskId: "wk20260713-personal-ip",
+    retainedLinks: retained,
+    obsoleteLinks: obsolete,
+  });
+
+  assert.deepEqual(result, { status: "applied", retainedLinks: 4, removedLinks: 4 });
+  assert.equal(repo.listFeishuLinks("retained-ip").length, 0);
+  assert.equal(repo.listFeishuLinks("obsolete-ip").length, 0);
+  assert.deepEqual(
+    repo.listFeishuLinks("wk20260713-personal-ip").map((link) => [link.checkpointIndex, link.taskGuid]),
+    retained.map((link) => [link.checkpointIndex, link.taskGuid]),
+  );
+  assert.deepEqual(repo.applyPersonalPlanLinkCutover({
+    retainedLocalTaskId: "retained-ip",
+    obsoleteLocalTaskId: "obsolete-ip",
+    targetLocalTaskId: "wk20260713-personal-ip",
+    retainedLinks: retained,
+    obsoleteLinks: obsolete,
+  }), { status: "already_applied", retainedLinks: 4, removedLinks: 0 });
+  db.close();
+});
+
+test("link cutover rejects a changed identity without mutating either tree", () => {
+  const { db, repo } = fixture();
+  const tasks = createTaskRepository(db);
+  for (const id of ["retained-ip", "obsolete-ip", "wk20260713-personal-ip"]) tasks.create({ id, title: id });
+  const retained = treeLinks("retained-ip", "keep");
+  const obsolete = treeLinks("obsolete-ip", "drop");
+  for (const link of [...retained, ...obsolete]) repo.upsertFeishuLink(link);
+  const changed = obsolete.map((link) => link.checkpointIndex === 1 ? { ...link, taskGuid: "unexpected-child" } : link);
+
+  assert.throws(() => repo.applyPersonalPlanLinkCutover({
+    retainedLocalTaskId: "retained-ip",
+    obsoleteLocalTaskId: "obsolete-ip",
+    targetLocalTaskId: "wk20260713-personal-ip",
+    retainedLinks: retained,
+    obsoleteLinks: changed,
+  }), /link identity changed/);
+  assert.equal(repo.listFeishuLinks("retained-ip").length, 4);
+  assert.equal(repo.listFeishuLinks("obsolete-ip").length, 4);
+  assert.equal(repo.listFeishuLinks("wk20260713-personal-ip").length, 0);
+  db.close();
+});
+
+function treeLinks(localTaskId, prefix) {
+  const parentGuid = `${prefix}-parent`;
+  return [-1, 0, 1, 2].map((checkpointIndex) => ({
+    localTaskId,
+    checkpointIndex,
+    taskGuid: checkpointIndex === -1 ? parentGuid : `${prefix}-child-${checkpointIndex}`,
+    parentGuid: checkpointIndex === -1 ? null : parentGuid,
+    snapshotHash: `${prefix}-${checkpointIndex}`,
+  }));
+}

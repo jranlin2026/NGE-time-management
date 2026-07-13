@@ -4,6 +4,8 @@ import {
   buildTaskBody,
   buildTaskUpdateBody,
   canCreateFeishuTasks,
+  deleteTask,
+  getTask,
   listSubtasks,
   listTasklistTasks,
   missingTaskConfig,
@@ -58,4 +60,28 @@ test("paginates tasklist tasks and subtasks by has_more", async () => {
   assert.equal(paths.some((path) => path.includes("tasklists/list%2F1/tasks?page_size=100&user_id_type=open_id")), true);
   assert.equal(paths.some((path) => path.includes("tasks/parent%2F1/subtasks?page_size=100&user_id_type=open_id")), true);
   assert.equal(paths.filter((path) => path.includes("page_token=next+token")).length, 2);
+});
+
+test("deletes one exact encoded task GUID through the injected Feishu request", async () => {
+  const calls = [];
+  const result = await deleteTask({}, "task/one", {
+    request: async (_config, path, options) => {
+      calls.push({ path, options });
+      return { code: 0 };
+    },
+  });
+  assert.deepEqual(result, { code: 0 });
+  assert.deepEqual(calls, [{ path: "/task/v2/tasks/task%2Fone", options: { method: "DELETE" } }]);
+});
+
+test("reads one exact task status through the injected Feishu request", async () => {
+  const calls = [];
+  const result = await getTask({}, "task/one", {
+    request: async (_config, path, options) => {
+      calls.push({ path, options });
+      return { data: { task: { guid: "task/one", completed_at: "0" } } };
+    },
+  });
+  assert.equal(result.data.task.completed_at, "0");
+  assert.deepEqual(calls, [{ path: "/task/v2/tasks/task%2Fone", options: { method: "GET" } }]);
 });

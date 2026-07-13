@@ -74,6 +74,16 @@ export async function updateTask(config, taskGuid, patch) {
   });
 }
 
+export async function deleteTask(config, taskGuid, deps = {}) {
+  const request = deps.request || feishuRequest;
+  return request(config, `/task/v2/tasks/${encodeURIComponent(taskGuid)}`, { method: "DELETE" });
+}
+
+export async function getTask(config, taskGuid, deps = {}) {
+  const request = deps.request || feishuRequest;
+  return request(config, `/task/v2/tasks/${encodeURIComponent(taskGuid)}`, { method: "GET" });
+}
+
 export function buildTaskUpdateBody(patch) {
   const task = {};
   const updateFields = [];
