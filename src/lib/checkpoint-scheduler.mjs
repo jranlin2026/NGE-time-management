@@ -6,6 +6,7 @@ export function materializeCheckpointSchedule({ schedule, tasks, date, timezone,
   const reservedIntervals = collectCurrentAndFutureAnchors({
     tasks,
     selectedTaskIds,
+    parentBlocksByTask,
     date,
     timezone,
     nowTimestamp,
@@ -25,6 +26,7 @@ export function materializeCheckpointSchedule({ schedule, tasks, date, timezone,
     materializedTaskIds.add(task.id);
 
     const materialized = materializeTaskCheckpoints({
+      task,
       parentBlocks: parentBlocksByTask.get(task.id),
       checkpoints,
       date,
@@ -45,6 +47,7 @@ export function materializeCheckpointSchedule({ schedule, tasks, date, timezone,
 }
 
 function materializeTaskCheckpoints({
+  task,
   parentBlocks,
   checkpoints,
   date,
@@ -70,8 +73,8 @@ function materializeTaskCheckpoints({
         incomplete = true;
         continue;
       }
-      if (nowTimestamp == null || end.getTime() > nowTimestamp) {
-        const source = sortedParents.find((block) => intervalStartsInBlock(start, block)) || sortedParents[0];
+      const source = sortedParents.find((block) => intervalStartsInBlock(start, block)) || sortedParents[0];
+      if (preservesExplicitAnchor({ task, source, start, end, nowTimestamp })) {
         output.push(checkpointBlock(source, checkpointIndex, start, end));
         cursor = Math.max(cursor, end.getTime());
         continue;
@@ -115,7 +118,7 @@ function nextSequentialSlot(parentBlocks, cursor, minutes, occupied = []) {
   return null;
 }
 
-function collectCurrentAndFutureAnchors({ tasks, selectedTaskIds, date, timezone, nowTimestamp }) {
+function collectCurrentAndFutureAnchors({ tasks, selectedTaskIds, parentBlocksByTask, date, timezone, nowTimestamp }) {
   const intervals = [];
   for (const task of tasks || []) {
     if (!selectedTaskIds.has(task.id)) continue;
@@ -124,11 +127,19 @@ function collectCurrentAndFutureAnchors({ tasks, selectedTaskIds, date, timezone
       const start = new Date(checkpoint.startsAt);
       const end = new Date(checkpoint.endsAt);
       if (!validInterval(start, end) || !intervalFallsOnDate(start, end, date, timezone)) continue;
-      if (nowTimestamp != null && end.getTime() <= nowTimestamp) continue;
+      const parentBlocks = parentBlocksByTask.get(task.id) || [];
+      const source = parentBlocks.find((block) => intervalStartsInBlock(start, block)) || parentBlocks[0];
+      if (!preservesExplicitAnchor({ task, source, start, end, nowTimestamp })) continue;
       intervals.push({ start: start.getTime(), end: end.getTime() });
     }
   }
   return intervals.sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
+function preservesExplicitAnchor({ task, source, start, end, nowTimestamp }) {
+  if (nowTimestamp == null || start.getTime() >= nowTimestamp) return true;
+  if (end.getTime() <= nowTimestamp) return false;
+  return task?.status === "doing" || source?.status === "doing";
 }
 
 function checkpointMinutes(checkpoint) {

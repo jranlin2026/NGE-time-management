@@ -89,11 +89,53 @@ test("09:00 stays silent without messages or changes", async () => {
   assert.equal(result.changed, false);
 });
 
+test("09:00 calibration replans from the execution instant", async () => {
+  const fixture = policyFixture();
+  const now = "2026-07-13T01:07:00.000Z";
+
+  await fixture.policy.apply({
+    node: "09:00",
+    workDate: "2026-07-13",
+    now,
+    messages: [{ messageId: "om-idea" }],
+    analysis: { items: [{ disposition: "candidate_pool", title: "备选口播题目" }] },
+    remoteProgress: emptyProgress,
+  });
+
+  assert.deepEqual(fixture.replans, [{
+    date: "2026-07-13",
+    now,
+    reason: "checkpoint_09:00",
+    deliveryMode: "task_dm",
+  }]);
+});
+
 test("12:00 turns zero progress into one 15-minute action", async () => {
   const result = await policyFixture({ scheduledTask: task() }).policy
     .apply({ node: "12:00", workDate: "2026-07-13", messages: [], analysis: { items: [] }, remoteProgress: emptyProgress });
   assert.match(result.reply, /15分钟/);
   assert.match(result.reply, /写脚本/);
+});
+
+test("12:00 progress replan uses the execution instant", async () => {
+  const fixture = policyFixture();
+  const now = "2026-07-13T04:11:00.000Z";
+
+  await fixture.policy.apply({
+    node: "12:00",
+    workDate: "2026-07-13",
+    now,
+    messages: [{ messageId: "om-noise" }],
+    analysis: { items: [{ disposition: "candidate_pool", title: "稍后再验证的想法" }] },
+    remoteProgress: emptyProgress,
+  });
+
+  assert.deepEqual(fixture.replans, [{
+    date: "2026-07-13",
+    now,
+    reason: "checkpoint_12:00",
+    deliveryMode: "task_dm",
+  }]);
 });
 
 test("12:00 early completion adds one high-value action and retains the buffer", async () => {
@@ -167,11 +209,13 @@ test("do-not-schedule inputs are explained in the one merged reply", async () =>
 });
 
 test("21:00 keeps one core task through midnight", async () => {
+  const now = "2026-07-13T13:04:00.000Z";
   const fixture = policyFixture({ remainingTasks: [task({ id: "a" }), task({ id: "b" })] });
   const result = await fixture.policy
-    .apply({ node: "21:00", workDate: "2026-07-13", messages: [], analysis: { items: [] }, remoteProgress: emptyProgress });
+    .apply({ node: "21:00", workDate: "2026-07-13", now, messages: [], analysis: { items: [] }, remoteProgress: emptyProgress });
   assert.equal(result.schedule.blocks.length, 1);
   assert.equal(fixture.replans.at(-1).maxCriticalTasks, 1);
+  assert.equal(fixture.replans.at(-1).now, now);
 });
 
 test("only actionable dispositions create tasks and retain timed checkpoint objects", async () => {
@@ -256,6 +300,7 @@ test("15:00 replans a new task even while preserving a doing task", async () => 
 });
 
 test("18:00 lists kept and removed evening work", async () => {
+  const now = "2026-07-13T10:03:00.000Z";
   const kept = task({ id: "kept", title: "交付今日脚本" });
   const removed = task({ id: "removed", title: "整理低价值素材" });
   const previousSchedule = { date: "2026-07-13", blocks: [
@@ -265,9 +310,10 @@ test("18:00 lists kept and removed evening work", async () => {
   const schedule = { date: "2026-07-13", blocks: previousSchedule.blocks };
   const fixture = policyFixture({ remainingTasks: [kept, removed], previousSchedule, schedule });
   const result = await fixture.policy.apply({
-    node: "18:00", workDate: "2026-07-13", messages: [], analysis: { items: [] }, remoteProgress: emptyProgress,
+    node: "18:00", workDate: "2026-07-13", now, messages: [], analysis: { items: [] }, remoteProgress: emptyProgress,
   });
   assert.equal(fixture.replans.at(-1).maxCriticalTasks, 1);
+  assert.equal(fixture.replans.at(-1).now, now);
   assert.match(result.reply, /交付今日脚本/);
   assert.match(result.reply, /移除.*整理低价值素材/);
   assert.match(result.reply, /现在只做：/);
@@ -314,13 +360,14 @@ test("21:00 sends final sprint for an unchanged unfinished critical outcome", as
 });
 
 test("remote parent completion is routed through manager acceptance handling first", async () => {
+  const now = "2026-07-13T07:05:00.000Z";
   const fixture = policyFixture({ scheduledTask: task({ id: "deliverable", requiresEvidence: true }), handleActionResult: { action: "evidence_required" } });
-  const result = await fixture.policy.apply({ node: "12:00", workDate: "2026-07-13", messages: [], analysis: { items: [] }, remoteProgress: {
+  const result = await fixture.policy.apply({ node: "12:00", workDate: "2026-07-13", now, messages: [], analysis: { items: [] }, remoteProgress: {
     completedTasks: [{ localTaskId: "deliverable", completedAt: "2026-07-13T03:00:00.000Z" }],
     completedCheckpoints: [],
   } });
   assert.deepEqual(fixture.handled[0], {
-    action: "complete", taskId: "deliverable", date: "2026-07-13", idempotencyKey: "feishu-parent:deliverable:2026-07-13T03:00:00.000Z", deliveryMode: "task_dm", suppressOutbox: true,
+    action: "complete", taskId: "deliverable", date: "2026-07-13", now, idempotencyKey: "feishu-parent:deliverable:2026-07-13T03:00:00.000Z", deliveryMode: "task_dm", suppressOutbox: true,
   });
   assert.equal(result.replyRequired, true);
   assert.match(result.reply, /已同步主任务完成.*验收证据/);
@@ -328,6 +375,7 @@ test("remote parent completion is routed through manager acceptance handling fir
 
 test("24:00 checkpoint completion replans the prior work date", async () => {
   const completedAt = "2026-07-13T16:00:00.000Z";
+  const now = "2026-07-14T00:05:00.000Z";
   const fixture = policyFixture({
     scheduledTask: task({ id: "prior-day-task" }),
     handleActionResult: { action: "complete_checkpoint", schedule: { date: "2026-07-13", blocks: [] } },
@@ -336,6 +384,7 @@ test("24:00 checkpoint completion replans the prior work date", async () => {
   await fixture.policy.apply({
     node: "24:00",
     workDate: "2026-07-13",
+    now,
     messages: [],
     analysis: { items: [] },
     remoteProgress: {
@@ -353,6 +402,7 @@ test("24:00 checkpoint completion replans the prior work date", async () => {
     taskId: "prior-day-task",
     checkpointIndex: 0,
     date: "2026-07-13",
+    now,
     idempotencyKey: `feishu-checkpoint:prior-day-task:0:${completedAt}`,
     deliveryMode: "task_dm",
     suppressOutbox: true,

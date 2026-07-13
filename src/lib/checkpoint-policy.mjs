@@ -78,6 +78,7 @@ async function applyRemoteProgress(state, deps) {
       taskId: change.localTaskId,
       checkpointIndex: change.checkpointIndex,
       date: state.workDate,
+      ...(state.now ? { now: state.now } : {}),
       idempotencyKey: `feishu-checkpoint:${change.taskGuid || `${change.localTaskId}:${change.checkpointIndex}`}:${change.completedAt}`,
       deliveryMode: "task_dm",
       suppressOutbox: true,
@@ -91,6 +92,7 @@ async function applyRemoteProgress(state, deps) {
       action: "complete",
       taskId: change.localTaskId,
       date: state.workDate,
+      ...(state.now ? { now: state.now } : {}),
       idempotencyKey: `feishu-parent:${change.taskGuid || change.localTaskId}:${change.completedAt}`,
       deliveryMode: "task_dm",
       suppressOutbox: true,
@@ -186,12 +188,12 @@ async function runDailyDispatch(state, deps) {
 
 async function runMorningCalibration(state, deps) {
   if (!state.changed) return;
-  state.schedule ||= await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_09:00", deliveryMode: "task_dm" });
+  state.schedule ||= await deps.manager.replanDay({ date: state.workDate, ...(state.now ? { now: state.now } : {}), reason: "checkpoint_09:00", deliveryMode: "task_dm" });
 }
 
 async function runMorningProgress(state, deps) {
   if (state.changed && !state.schedule) {
-    state.schedule = await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_12:00", deliveryMode: "task_dm" });
+    state.schedule = await deps.manager.replanDay({ date: state.workDate, ...(state.now ? { now: state.now } : {}), reason: "checkpoint_12:00", deliveryMode: "task_dm" });
   }
   const active = activeForProgress(deps.tasks.listActive());
   if (hasProgress(active, state.remoteProgress)) {
@@ -214,7 +216,7 @@ async function runAfternoonStartCheck(state, deps) {
 }
 
 async function runDayOutcomeCheck(state, deps) {
-  state.schedule = await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_18:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
+  state.schedule = await deps.manager.replanDay({ date: state.workDate, ...(state.now ? { now: state.now } : {}), reason: "checkpoint_18:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
   if (state.schedule.blocks.length || state.changed) {
     state.actions.push({ type: "evening_trim", schedule: state.schedule });
     state.changed = true;
@@ -222,7 +224,7 @@ async function runDayOutcomeCheck(state, deps) {
 }
 
 async function runFinalSprint(state, deps) {
-  state.schedule = await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_21:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
+  state.schedule = await deps.manager.replanDay({ date: state.workDate, ...(state.now ? { now: state.now } : {}), reason: "checkpoint_21:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
   const active = activeForProgress(deps.tasks.listActive());
   const doing = deps.tasks.findDoing?.() || active.find((task) => task.status === "doing");
   if (doing) {

@@ -252,6 +252,51 @@ test("late replanning moves stale anchors after lunch and preserves future ancho
   db.close();
 });
 
+test("10:15 catch-up moves a partially elapsed planned checkpoint", async () => {
+  const { db, tasks, ops, manager } = setup({
+    settings: {
+      timezone: "Asia/Shanghai",
+      windows: [["10:00", "12:00"]],
+      maxCriticalTasks: 3,
+      noResponseMinutes: 15,
+      projectBoosts: [],
+    },
+  });
+  tasks.create({
+    id: "partially-elapsed",
+    title: "录制口播",
+    rawInput: "录制口播",
+    status: "scheduled",
+    estimateMinutes: 30,
+    checkpoints: [{
+      title: "录制第一条口播",
+      minutes: 30,
+      startsAt: "2026-07-10T02:00:00.000Z",
+      endsAt: "2026-07-10T02:30:00.000Z",
+    }],
+  });
+  ops.replaceSchedule({ date: "2026-07-10", blocks: [{
+    taskId: "partially-elapsed",
+    checkpointIndex: 0,
+    startsAt: "2026-07-10T02:00:00.000Z",
+    endsAt: "2026-07-10T02:30:00.000Z",
+    status: "planned",
+    reason: "original plan",
+  }] });
+
+  const result = await manager.replanDay({
+    date: "2026-07-10",
+    now: "2026-07-10T02:15:00.000Z",
+    deliveryMode: "task_dm",
+  });
+
+  assert.deepEqual(result.blocks.map((block) => [block.startsAt, block.endsAt]), [
+    ["2026-07-10T02:15:00.000Z", "2026-07-10T02:45:00.000Z"],
+  ]);
+  assert.deepEqual(result.blocks, ops.currentSchedule("2026-07-10"));
+  db.close();
+});
+
 test("12:00 concrete task feedback shrinks remaining scope before real replanning", async () => {
   const { db, tasks, ops, manager } = setup({
     settings: {

@@ -71,6 +71,25 @@ test("one day flows from merged DMs through subtasks and review", async (t) => {
   assert.match(review.renderedText, /完成子任务：1\/3/);
 });
 
+test("15:00 catch-up of the 12:00 node never republishes work before execution", async (t) => {
+  const day = e2eFixture();
+  t.after(() => day.close());
+  day.seedConfirmedDailyTask();
+  day.feishu.addDirectMessages([
+    message("om-catch-up", "想到一个稍后验证的新选题", "2026-07-13T04:10:00.000Z"),
+  ]);
+
+  await day.checkpointRunner.run({
+    now: "2026-07-13T15:00:00+08:00",
+    forcedNode: "12:00",
+  });
+
+  const blocks = day.ops.currentSchedule("2026-07-13");
+  assert.ok(blocks.length > 0);
+  assert.equal(blocks.some((block) => block.startsAt < "2026-07-13T07:00:00.000Z"), false);
+  assert.equal(day.feishu.subtasks.some((task) => task.startAt && task.startAt < "2026-07-13T07:00:00.000Z"), false);
+});
+
 function e2eFixture({ timezone = "Asia/Shanghai", clockNow = "2026-07-13T08:00:00+08:00" } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "checkpoint-e2e-"));
   writeProject(directory);

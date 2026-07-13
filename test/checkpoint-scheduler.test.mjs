@@ -257,6 +257,62 @@ test("moves stale explicit anchors around future anchors inside remaining capaci
   assert.deepEqual(result.deferred, []);
 });
 
+test("moves a partially elapsed planned anchor behind the execution instant", () => {
+  const schedule = dailySchedule([
+    parentBlock("task-partial", "2026-07-13T02:00:00.000Z", "2026-07-13T03:00:00.000Z"),
+  ]);
+  const task = {
+    id: "task-partial",
+    status: "scheduled",
+    checkpoints: [{
+      title: "录制第一条口播",
+      minutes: 30,
+      startsAt: "2026-07-13T02:00:00.000Z",
+      endsAt: "2026-07-13T02:30:00.000Z",
+    }],
+  };
+
+  const result = materializeCheckpointSchedule({
+    schedule,
+    tasks: [task],
+    date: DATE,
+    timezone: TIMEZONE,
+    now: "2026-07-13T02:15:00.000Z",
+  });
+
+  assert.deepEqual(result.blocks.map((block) => [block.startsAt, block.endsAt]), [
+    ["2026-07-13T02:15:00.000Z", "2026-07-13T02:45:00.000Z"],
+  ]);
+});
+
+test("preserves a partially elapsed anchor only when the task is genuinely doing", () => {
+  const schedule = dailySchedule([
+    parentBlock("task-doing", "2026-07-13T02:00:00.000Z", "2026-07-13T03:00:00.000Z"),
+  ]);
+  const task = {
+    id: "task-doing",
+    status: "doing",
+    checkpoints: [{
+      title: "正在录制第一条口播",
+      minutes: 30,
+      startsAt: "2026-07-13T02:00:00.000Z",
+      endsAt: "2026-07-13T02:30:00.000Z",
+    }],
+  };
+
+  const result = materializeCheckpointSchedule({
+    schedule,
+    tasks: [task],
+    date: DATE,
+    timezone: TIMEZONE,
+    now: "2026-07-13T02:15:00.000Z",
+  });
+
+  assert.deepEqual(result.blocks.map((block) => [block.startsAt, block.endsAt]), [
+    ["2026-07-13T02:00:00.000Z", "2026-07-13T02:30:00.000Z"],
+  ]);
+});
+
 test("completed explicit checkpoints keep history and do not consume stale replan capacity", () => {
   const schedule = dailySchedule([
     parentBlock("task-history", "2026-07-13T06:00:00.000Z", "2026-07-13T06:30:00.000Z"),

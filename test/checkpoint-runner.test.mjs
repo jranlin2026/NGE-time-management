@@ -50,24 +50,35 @@ test("queues no reply for a quiet healthy 15:00 run", async () => {
   assert.equal(fixture.outbox.length, 0);
 });
 
-test("passes the logical checkpoint instant to progress reconciliation and policy", async () => {
-  let reconciliationInput;
-  let policyInput;
+test("uses the invocation instant for catch-up scheduling while preserving message cutoffs", async () => {
+  const reconciliationInputs = [];
+  const policyInputs = [];
   const fixture = runnerFixture({
+    completedNodes: ["2026-07-12:24:00"],
     reconcileRemoteProgress: async (input) => {
-      reconciliationInput = input;
+      reconciliationInputs.push(input);
       return { actions: [], replyParts: [], changed: false };
     },
     applyPolicy: async (input) => {
-      policyInput = input;
+      policyInputs.push(input);
       return { replyRequired: false, reply: "", actions: [], schedule: { version: 1, blocks: [] } };
     },
   });
 
-  await fixture.runner.run({ now: "2026-07-13T12:00:00+08:00", forcedNode: "12:00" });
+  await fixture.runner.run({ now: "2026-07-13T09:00:00+08:00" });
 
-  assert.equal(reconciliationInput.now, "2026-07-13T04:00:00.000Z");
-  assert.equal(policyInput.now, "2026-07-13T04:00:00.000Z");
+  assert.deepEqual(fixture.polls.map((input) => input.endTime), [
+    "2026-07-13T00:00:00.000Z",
+    "2026-07-13T01:00:00.000Z",
+  ].map((value) => Date.parse(value) / 1000));
+  assert.deepEqual(reconciliationInputs.map(({ node, now }) => [node, now]), [
+    ["08:00", "2026-07-13T01:00:00.000Z"],
+    ["09:00", "2026-07-13T01:00:00.000Z"],
+  ]);
+  assert.deepEqual(policyInputs.map(({ node, now }) => [node, now]), [
+    ["08:00", "2026-07-13T01:00:00.000Z"],
+    ["09:00", "2026-07-13T01:00:00.000Z"],
+  ]);
 });
 
 test("an overlapping runner performs no writes", async () => {

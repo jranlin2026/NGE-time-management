@@ -29,6 +29,7 @@ export function createCheckpointRunner(deps) {
 
       let activeRun = null;
       let summary = emptySummary(context.workDate, [], "completed");
+      const schedulingNow = instant.toISOString();
       try {
         await deps.reconcileProjectWrites?.();
         const completedNodes = await deps.getCompletedNodes?.(context.workDate) || [];
@@ -78,10 +79,10 @@ export function createCheckpointRunner(deps) {
             }) || analysisContext;
           }
           const progress = await deps.policy.reconcileRemoteProgress({
-            node, workDate, now: pollThrough, messages: analysisBatch, remoteProgress,
+            node, workDate, now: schedulingNow, messages: analysisBatch, remoteProgress,
           });
           const result = await deps.policy.apply({
-            node, workDate, now: pollThrough, messages: analysisBatch, analysis, remoteProgress,
+            node, workDate, now: schedulingNow, messages: analysisBatch, analysis, remoteProgress,
             remoteProgressApplied: true,
             prelude: progress,
           });
