@@ -412,6 +412,68 @@ test("an already-applied manifest rejects remote drift without mutation", async 
   }
 });
 
+test("an already-applied manifest remains bound to its signed remote identities", async (t) => {
+  const scenarios = [
+    {
+      name: "retained parent title changed",
+      mutate(fixture) {
+        fixture.api.parents.find((item) => item.guid === "keep-parent").summary = "changed title";
+      },
+    },
+    {
+      name: "retained child time changed",
+      mutate(fixture) {
+        fixture.api.children["keep-parent"][0].due = {
+          timestamp: "1783972800000",
+          is_all_day: false,
+        };
+      },
+    },
+    {
+      name: "retained child client token changed",
+      mutate(fixture) {
+        fixture.api.children["keep-parent"][1].client_token = "changed-client-token";
+      },
+    },
+    {
+      name: "one completed history parent was substituted",
+      mutate(fixture) {
+        fixture.api.parents = fixture.api.parents.filter((item) => item.guid !== "history-4");
+        fixture.api.parents.push(remoteParent("replacement-history", { completed: true, allDay: true }));
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async (t) => {
+      const fixture = await cutoverFixture(t);
+      const prepared = await preparePersonalPlanCutover(fixture.prepareOptions);
+      await applyPersonalPlanCutover({
+        manifestPath: prepared.manifestPath,
+        manifestDir: fixture.manifestDir,
+        repo: fixture.repo,
+        api: fixture.api,
+        config: {},
+        expectedWorkDate: WORK_DATE,
+      });
+      const beforeLinks = fixture.repo.listAllFeishuLinks();
+      fixture.api.deleteCalls.length = 0;
+      scenario.mutate(fixture);
+
+      await assert.rejects(() => applyPersonalPlanCutover({
+        manifestPath: prepared.manifestPath,
+        manifestDir: fixture.manifestDir,
+        repo: fixture.repo,
+        api: fixture.api,
+        config: {},
+        expectedWorkDate: WORK_DATE,
+      }), /remote candidate changed/);
+      assert.equal(fixture.api.deleteCalls.length, 0);
+      assert.deepEqual(fixture.repo.listAllFeishuLinks(), beforeLinks);
+    });
+  }
+});
+
 test("apply rejects duplicate, overlapping or unsigned manifest identities before remote calls", async (t) => {
   const mutators = [
     (manifest) => {

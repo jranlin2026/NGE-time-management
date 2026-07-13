@@ -219,6 +219,8 @@ export async function applyPersonalPlanCutover({
       legacyTaskGuids: repo.listSentLegacyTaskGuids(),
     });
     if (verified.state !== "already_applied") throw new Error("cutover completed state is invalid");
+    const remoteByGuid = await readManifestStatuses(api, config, manifest);
+    revalidateRemoteSnapshot({ manifest, snapshot, remoteByGuid, repo });
     return {
       status: "already_applied",
       counts: { remoteDeleted: 0, alreadyMissing: 9, retainedLinks: 4, removedLinks: 0 },
