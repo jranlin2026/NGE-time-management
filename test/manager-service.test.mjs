@@ -215,6 +215,54 @@ test("15:00 policy preserves real doing work and schedules the new today task", 
   db.close();
 });
 
+test("18:00 policy persists the same one-outcome schedule it returns after remote progress", async () => {
+  const { db, tasks, ops, manager } = setup();
+  tasks.create({
+    id: "evening-current",
+    rawInput: "完成晚间关键交付",
+    title: "完成晚间关键交付",
+    status: "doing",
+    estimateMinutes: 60,
+    checkpoints: [
+      { title: "完成第一阶段", minutes: 30 },
+      { title: "导出最终交付", minutes: 30 },
+    ],
+  });
+  tasks.create({
+    id: "evening-extra",
+    rawInput: "整理低价值素材",
+    title: "整理低价值素材",
+    status: "ready",
+    estimateMinutes: 30,
+    checkpoints: [{ title: "整理素材", minutes: 30 }],
+  });
+  await manager.replanDay({ date: "2026-07-10", now: NOW, deliveryMode: "task_dm" });
+  const policy = createCheckpointPolicy({
+    manager,
+    tasks,
+    getSchedule: (date) => ({ date, blocks: ops.currentSchedule(date) }),
+  });
+
+  const result = await policy.apply({
+    node: "18:00",
+    workDate: "2026-07-10",
+    messages: [],
+    analysis: { items: [] },
+    remoteProgress: {
+      completedTasks: [],
+      completedCheckpoints: [{
+        localTaskId: "evening-current",
+        checkpointIndex: 0,
+        completedAt: "2026-07-10T10:00:00.000Z",
+      }],
+    },
+  });
+
+  assert.equal(new Set(result.schedule.blocks.map((block) => block.taskId)).size, 1);
+  assert.deepEqual(result.schedule.blocks, ops.currentSchedule("2026-07-10"));
+  db.close();
+});
+
 test("silent task_dm action queues no standalone owner message", async () => {
   const { db, tasks, ops, manager } = setup();
   tasks.create({ id: "remote-done", rawInput: "远端完成", status: "doing" });

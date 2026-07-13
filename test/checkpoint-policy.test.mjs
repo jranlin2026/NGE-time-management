@@ -22,7 +22,12 @@ function policyFixture({ scheduledTask = null, doingTask = null, remainingTasks 
     handleAction: async (input) => { handled.push(input); return handleActionResult || { action: input.action }; },
     replanDay: async (input) => {
       replans.push(input);
-      return (typeof schedule === "function" ? schedule(tasks) : schedule) || ({ date: "2026-07-13", version: 1, blocks: tasks.map((item) => ({ taskId: item.id })) });
+      const planned = (typeof schedule === "function" ? schedule(tasks) : schedule)
+        || ({ date: "2026-07-13", version: 1, blocks: tasks.map((item) => ({ taskId: item.id })) });
+      if (!Number.isInteger(input.maxCriticalTasks)) return planned;
+      const keptTaskIds = [...new Set(planned.blocks.map((block) => block.taskId))]
+        .slice(0, input.maxCriticalTasks);
+      return { ...planned, blocks: planned.blocks.filter((block) => keptTaskIds.includes(block.taskId)) };
     },
     dispatchDay: async () => (typeof schedule === "function" ? schedule(tasks) : schedule) || ({ date: "2026-07-13", version: 1, blocks: tasks.map((item) => ({ taskId: item.id })) }),
   };
@@ -162,9 +167,11 @@ test("do-not-schedule inputs are explained in the one merged reply", async () =>
 });
 
 test("21:00 keeps one core task through midnight", async () => {
-  const result = await policyFixture({ remainingTasks: [task({ id: "a" }), task({ id: "b" })] }).policy
+  const fixture = policyFixture({ remainingTasks: [task({ id: "a" }), task({ id: "b" })] });
+  const result = await fixture.policy
     .apply({ node: "21:00", workDate: "2026-07-13", messages: [], analysis: { items: [] }, remoteProgress: emptyProgress });
   assert.equal(result.schedule.blocks.length, 1);
+  assert.equal(fixture.replans.at(-1).maxCriticalTasks, 1);
 });
 
 test("only actionable dispositions create tasks and retain timed checkpoint objects", async () => {
@@ -255,10 +262,12 @@ test("18:00 lists kept and removed evening work", async () => {
     { taskId: "kept", checkpointIndex: 0, startsAt: "2026-07-13T10:30:00.000Z", endsAt: "2026-07-13T11:00:00.000Z" },
     { taskId: "removed", checkpointIndex: 0, startsAt: "2026-07-13T11:00:00.000Z", endsAt: "2026-07-13T11:30:00.000Z" },
   ] };
-  const schedule = { date: "2026-07-13", blocks: [previousSchedule.blocks[0]] };
-  const result = await policyFixture({ remainingTasks: [kept, removed], previousSchedule, schedule }).policy.apply({
+  const schedule = { date: "2026-07-13", blocks: previousSchedule.blocks };
+  const fixture = policyFixture({ remainingTasks: [kept, removed], previousSchedule, schedule });
+  const result = await fixture.policy.apply({
     node: "18:00", workDate: "2026-07-13", messages: [], analysis: { items: [] }, remoteProgress: emptyProgress,
   });
+  assert.equal(fixture.replans.at(-1).maxCriticalTasks, 1);
   assert.match(result.reply, /交付今日脚本/);
   assert.match(result.reply, /移除.*整理低价值素材/);
   assert.match(result.reply, /现在只做：/);

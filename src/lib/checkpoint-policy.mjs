@@ -200,8 +200,7 @@ async function runAfternoonStartCheck(state, deps) {
 }
 
 async function runDayOutcomeCheck(state, deps) {
-  state.schedule ||= await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_18:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
-  state.schedule = keepOneCoreTask(state.schedule);
+  state.schedule = await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_18:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
   if (state.schedule.blocks.length || state.changed) {
     state.actions.push({ type: "evening_trim", schedule: state.schedule });
     state.changed = true;
@@ -209,8 +208,7 @@ async function runDayOutcomeCheck(state, deps) {
 }
 
 async function runFinalSprint(state, deps) {
-  state.schedule ||= await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_21:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
-  state.schedule = keepOneCoreTask(state.schedule);
+  state.schedule = await deps.manager.replanDay({ date: state.workDate, reason: "checkpoint_21:00", deliveryMode: "task_dm", maxCriticalTasks: 1 });
   const active = activeForProgress(deps.tasks.listActive());
   const doing = deps.tasks.findDoing?.() || active.find((task) => task.status === "doing");
   if (doing) {
@@ -450,12 +448,6 @@ function firstIncompleteCheckpoint(tasks) {
     if (task.nextAction) return { title: task.nextAction };
   }
   return null;
-}
-
-function keepOneCoreTask(schedule) {
-  if (!schedule) return { blocks: [] };
-  const firstTaskId = schedule.blocks?.[0]?.taskId;
-  return { ...schedule, blocks: firstTaskId ? schedule.blocks.filter((block) => block.taskId === firstTaskId) : [] };
 }
 
 export { EVENING_NODES };
