@@ -73,6 +73,8 @@ npm run checkpoint
 
 `npm run checkpoint` 是正常的一次性运行入口。验收后由下文的唯一 Codex 自动化定时触发；不要在切换期间运行 `node scripts/run-manager.mjs`。
 
+模型路由分为内外两层：外层 Codex 固定节点自动化保持使用 `gpt-5.6-luna`，推理强度为 `medium`；项目进程内的消息分析器通过 `CODEX_MODEL=gpt-5.6-terra` 与 `CODEX_REASONING_EFFORT=high` 使用 Terra high。不要把外层自动化的模型配置写入内层分析器环境变量。
+
 `.env` 至少配置：
 
 ```text
