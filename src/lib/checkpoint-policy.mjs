@@ -119,8 +119,8 @@ async function applyDeterministicItems(state, deps) {
       state.actions.push({ type: "evidence_submitted", taskId });
       state.changed = true;
     } else if (item.disposition === "task_feedback") {
-      const updated = await applyTaskFeedback(item, deps.tasks);
-      if (!updated) {
+      const feedback = await applyTaskFeedback(item, state, deps);
+      if (!feedback) {
         state.actions.push({
           type: "candidate_recorded",
           title: item.title || "待确认的任务反馈",
@@ -129,9 +129,10 @@ async function applyDeterministicItems(state, deps) {
         state.changed = true;
         continue;
       }
-      state.actions.push({ type: "task_feedback", taskId: updated.id, detail: updated.nextAction });
+      state.actions.push({ type: "task_feedback", taskId: feedback.task.id, detail: feedback.task.nextAction });
       state.changed = true;
-      state.feedbackUpdated = true;
+      if (feedback.action === "updated") state.feedbackUpdated = true;
+      else state.schedule ||= readSchedule(state, deps);
     } else if (item.disposition === "candidate_pool") {
       state.actions.push({ type: "candidate_recorded", title: item.title });
       state.changed = true;
@@ -268,7 +269,11 @@ function finalizeCheckpointReply(state, deps) {
 
 function readSchedule(state, deps) {
   const schedule = deps.getSchedule?.(state.workDate);
-  if (schedule?.blocks) return schedule;
+  if (schedule?.blocks) {
+    if (Number.isInteger(schedule.version)) return schedule;
+    const version = Math.max(0, ...schedule.blocks.map((block) => Number(block.version) || 0));
+    return version > 0 ? { ...schedule, version } : schedule;
+  }
   return { date: state.workDate, blocks: [] };
 }
 
@@ -404,21 +409,36 @@ function taskInput(item, itemIndex) {
   };
 }
 
-async function applyTaskFeedback(item, tasks) {
+async function applyTaskFeedback(item, state, deps) {
   if (typeof item?.taskId !== "string" || !item.taskId.trim()
-    || typeof tasks?.findById !== "function" || typeof tasks?.update !== "function") return null;
-  const current = tasks.findById(item.taskId);
-  if (!current || ["done", "cancelled"].includes(current.status)) return null;
-  const patch = feedbackScopePatch(item, current);
+    || typeof deps.tasks?.findById !== "function"
+    || typeof deps.manager?.applyTaskFeedback !== "function") return null;
+  const current = deps.tasks.findById(item.taskId);
+  if (!current || ["done", "cancelled", "pending_acceptance"].includes(current.status)) return null;
+  const source = feedbackSource(item, state.messages);
+  if (!source || !sourceRequestsFeedbackChange(source.text)
+    || !sourceIdentifiesTask(source.text, current, deps.tasks)) return null;
+  const patch = feedbackScopePatch(item, current, deps.links);
   if (!patch) return null;
-  return tasks.update(current.id, patch);
+  const result = await deps.manager.applyTaskFeedback({
+    taskId: current.id,
+    patch,
+    messageIds: source.messageIds,
+    idempotencyKey: `checkpoint-task-feedback:${stableDigest(current.id, source.messageIds)}`,
+  });
+  if (!["updated", "unchanged", "duplicate"].includes(result?.action) || !result.task) return null;
+  return result;
 }
 
-function feedbackScopePatch(item, current) {
+function feedbackScopePatch(item, current, links) {
   const nextAction = cleanText(item.nextAction);
   const doneDefinition = cleanText(item.doneDefinition);
   const estimateMinutes = Number(item.estimateMinutes);
-  const completed = (current.checkpoints || []).filter((checkpoint) => checkpoint.completed);
+  const existing = current.checkpoints || [];
+  const completedCount = existing.findIndex((checkpoint) => !checkpoint.completed);
+  const prefixLength = completedCount === -1 ? existing.length : completedCount;
+  if (existing.slice(prefixLength).some((checkpoint) => checkpoint.completed)) return null;
+  const completed = existing.slice(0, prefixLength);
   const remaining = Array.isArray(item.checkpoints) ? item.checkpoints : [];
   if (!isConcreteFeedbackText(nextAction)
     || !isConcreteFeedbackText(doneDefinition)
@@ -438,12 +458,100 @@ function feedbackScopePatch(item, current) {
     checkpointMinutes += minutes;
   }
   if (checkpointMinutes !== estimateMinutes) return null;
+  const nextLength = completed.length + checkpoints.length;
+  if (nextLength < existing.length && typeof links?.listFeishuLinks !== "function") return null;
+  if (typeof links?.listFeishuLinks === "function") {
+    let taskLinks;
+    try {
+      taskLinks = links.listFeishuLinks(current.id);
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(taskLinks)
+      || taskLinks.some((link) => Number.isInteger(link.checkpointIndex)
+        && link.checkpointIndex >= nextLength)) return null;
+  }
   return {
     nextAction,
     doneDefinition,
     estimateMinutes,
     checkpoints: [...completed, ...checkpoints],
   };
+}
+
+function feedbackSource(item, messages) {
+  const messageIds = [...new Set(Array.isArray(item?.messageIds) ? item.messageIds : [])]
+    .filter((id) => typeof id === "string" && id)
+    .sort();
+  if (!messageIds.length) return null;
+  const byId = new Map((messages || []).map((message) => [message?.messageId, message]));
+  if (messageIds.some((id) => !byId.has(id))) return null;
+  const texts = messageIds.map((id) => sourceMessageText(byId.get(id))).filter(Boolean);
+  if (!texts.length) return null;
+  return { messageIds, text: texts.join("\n") };
+}
+
+function sourceMessageText(message) {
+  if (typeof message?.content?.text === "string") return cleanText(message.content.text);
+  if (typeof message?.content === "string") return cleanText(message.content);
+  if (typeof message?.text === "string") return cleanText(message.text);
+  return "";
+}
+
+function sourceRequestsFeedbackChange(value) {
+  const text = cleanText(value);
+  const directChange = /(?:缩减|缩小|减少|减到|降到|砍掉|删掉|去掉|改成|改为|调整为|调整到|只(?:做|拍|录制|完成|保留)|先(?:做|拍|录制|完成)|推迟|延期|延后|顺延|挪到|改到|暂缓)/u;
+  return directChange.test(text)
+    || /(?:来不及|赶不及).{0,30}(?:先|只|改|缩|减|推迟|延期)/u.test(text);
+}
+
+function sourceIdentifiesTask(sourceText, target, tasks) {
+  const eligible = (typeof tasks?.listActive === "function" ? tasks.listActive() : [target])
+    .filter((task) => task && !["done", "cancelled", "pending_acceptance"].includes(task.status));
+  if (!eligible.some((task) => task.id === target.id)) return false;
+  const normalizedSource = normalizeTaskLanguage(sourceText);
+  const scored = eligible
+    .map((task) => ({ task, score: feedbackTaskMatchScore(normalizedSource, task) }))
+    .filter((entry) => entry.score >= 2)
+    .sort((left, right) => right.score - left.score || left.task.id.localeCompare(right.task.id));
+  if (scored.length && scored[0].task.id === target.id
+    && (scored.length === 1 || scored[0].score > scored[1].score)) return true;
+  const doing = eligible.filter((task) => task.status === "doing");
+  return doing.length === 1 && doing[0].id === target.id
+    && /(?:这个任务|当前任务|正在做的任务|手上这件事)/u.test(sourceText);
+}
+
+function feedbackTaskMatchScore(normalizedSource, task) {
+  const aliases = taskAliases(task).map(normalizeTaskLanguage).filter((alias) => alias.length >= 3);
+  if (aliases.some((alias) => normalizedSource.includes(alias))) return 100;
+  const sourceSignals = taskSignals(normalizedSource);
+  const taskSignalSet = new Set(aliases.flatMap((alias) => [...taskSignals(alias)]));
+  return [...sourceSignals].filter((signal) => taskSignalSet.has(signal)).length;
+}
+
+function taskAliases(task) {
+  return [task.title, task.rawInput, task.nextAction, ...(task.checkpoints || []).map((checkpoint) => checkpoint.title)]
+    .flatMap((value) => cleanText(value).split(/[｜|:：—-]/u))
+    .filter(Boolean);
+}
+
+function taskSignals(value) {
+  const signals = new Set();
+  const actions = ["拍", "写", "发", "修复", "验证", "测试", "整理", "记录", "核对", "导出", "发布", "配置", "确认", "提交"];
+  for (const action of actions) if (value.includes(action)) signals.add(`action:${action}`);
+  for (const quantity of value.match(/\d+(?:个|条|份|页|次|张|段|分钟|小时|版|项|家|人)/gu) || []) {
+    signals.add(`quantity:${quantity}`);
+  }
+  const nouns = ["极享os", "codex", "crm", "个人ip", "口播", "脚本", "视频", "原片", "客户", "线索", "财务", "订单", "提成", "售后", "直播", "文案", "页面", "模块", "需求", "数据", "名单"];
+  for (const noun of nouns) if (value.includes(noun)) signals.add(`noun:${noun}`);
+  return signals;
+}
+
+function normalizeTaskLanguage(value) {
+  return cleanText(value)
+    .toLocaleLowerCase("zh-CN")
+    .replace(/(?:录制|拍摄)/gu, "拍")
+    .replace(/[\s，。！？；：、,.!?;:｜|()（）【】\[\]{}《》“”'"—_-]+/gu, "");
 }
 
 function isConcreteFeedbackText(value) {

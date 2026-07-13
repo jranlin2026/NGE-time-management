@@ -346,6 +346,42 @@ export function createManagerService(deps) {
     };
   }
 
+  function applyTaskFeedback(input) {
+    const allowedPatchFields = ["checkpoints", "doneDefinition", "estimateMinutes", "nextAction"];
+    const patchFields = Object.keys(input?.patch || {}).sort();
+    if (!input?.taskId || !input?.idempotencyKey
+      || patchFields.length !== allowedPatchFields.length
+      || patchFields.some((field, index) => field !== allowedPatchFields[index])) {
+      return { action: "rejected", task: input?.taskId ? tasks.findById(input.taskId) : null };
+    }
+    return transaction(() => {
+      const prior = ops.findEventByIdempotencyKey(input.idempotencyKey);
+      if (prior) {
+        return { action: "duplicate", task: prior.taskId ? tasks.findById(prior.taskId) : null, event: prior };
+      }
+      const task = tasks.findById(input.taskId);
+      if (!task || ["done", "cancelled", "pending_acceptance"].includes(task.status)) {
+        return { action: "rejected", task };
+      }
+      const unchanged = task.nextAction === input.patch.nextAction
+        && task.doneDefinition === input.patch.doneDefinition
+        && task.estimateMinutes === input.patch.estimateMinutes
+        && JSON.stringify(task.checkpoints) === JSON.stringify(input.patch.checkpoints);
+      const saved = unchanged ? task : tasks.update(task.id, input.patch);
+      const event = ops.appendEvent({
+        taskId: task.id,
+        kind: "task_feedback_applied",
+        payload: {
+          messageIds: [...new Set(input.messageIds || [])].sort(),
+          changed: !unchanged,
+          estimateMinutes: saved.estimateMinutes,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+      return { action: unchanged ? "unchanged" : "updated", task: saved, event };
+    });
+  }
+
   async function resumeDeferredTask(taskId) {
     const task = tasks.findById(taskId);
     if (!task || task.status !== "deferred") return null;
@@ -414,6 +450,7 @@ export function createManagerService(deps) {
     },
     decideAcceptance: (input) => acceptance.decideByUser(input),
     listPendingAcceptance: () => tasks.listByStatus("pending_acceptance"),
+    applyTaskFeedback,
     replanDay,
     dispatchDay,
     runMiddayCheck,

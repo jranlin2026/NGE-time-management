@@ -6,9 +6,13 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createCheckpointRunner } from "../src/lib/checkpoint-runner.mjs";
-import { openDatabase } from "../src/db/database.mjs";
+import { openDatabase, withTransaction } from "../src/db/database.mjs";
+import { createTaskRepository } from "../src/db/task-repository.mjs";
 import { createOperationsRepository } from "../src/db/operations-repository.mjs";
+import { createAutomationRepository } from "../src/db/automation-repository.mjs";
 import { createOutboxWorker } from "../src/lib/outbox-worker.mjs";
+import { createManagerService } from "../src/lib/manager-service.mjs";
+import { createCheckpointPolicy } from "../src/lib/checkpoint-policy.mjs";
 
 test("commits messages only after sync and reply queueing succeed", async () => {
   const fixture = runnerFixture({ messages: [message("om-1", "新增一个选题")] });
@@ -302,6 +306,153 @@ test("pre-atomic finalization failure retries the original batch and outbox iden
   assert.equal(keys[0], keys[1]);
   assert.equal(fixture.calls.includes("complete"), false);
   assert.deepEqual(fixture.pending, []);
+});
+
+test("real failed-run retry applies grounded task feedback once without another schedule or DM", async () => {
+  const now = "2026-07-13T04:00:00.000Z";
+  const db = openDatabase(":memory:");
+  let sequence = 0;
+  const id = () => `retry-${++sequence}`;
+  const tasks = createTaskRepository(db, { now: () => now, id });
+  const ops = createOperationsRepository(db, { now: () => now, id });
+  const storedRuntime = createAutomationRepository(db, { now: () => now, claimToken: id });
+  let failFinalize = true;
+  const runtime = {
+    ...storedRuntime,
+    finalizeInbound(input) {
+      if (failFinalize) {
+        failFinalize = false;
+        throw new Error("crash after main summary delivery");
+      }
+      return storedRuntime.finalizeInbound(input);
+    },
+  };
+  let feedbackUpdates = 0;
+  const update = tasks.update.bind(tasks);
+  tasks.update = (taskId, patch) => {
+    if (Object.hasOwn(patch, "checkpoints")) feedbackUpdates += 1;
+    return update(taskId, patch);
+  };
+  const manager = createManagerService({
+    db,
+    transaction: (fn) => withTransaction(db, fn),
+    tasks,
+    ops,
+    analyzer: {
+      analyzeTask: async () => assert.fail("ordinary analysis is outside this retry"),
+      minimumAction: async () => ({ action: "先录制第一条口播", minutes: 15 }),
+    },
+    reminderEngine: { scheduleTask() {} },
+    clock: { now: () => new Date(now) },
+    settings: {
+      timezone: "Asia/Shanghai",
+      windows: [["10:00", "12:00"], ["14:00", "18:00"]],
+      maxCriticalTasks: 3,
+      noResponseMinutes: 15,
+      projectBoosts: [],
+    },
+  });
+  tasks.create({
+    id: "video-task",
+    title: "个人IP｜录制3条口播",
+    rawInput: "录制3条口播",
+    status: "scheduled",
+    estimateMinutes: 60,
+    nextAction: "录制3条口播",
+    doneDefinition: "3条可剪辑原片已提交",
+    checkpoints: [
+      {
+        title: "完成3条口播提纲",
+        minutes: 30,
+        startsAt: "2026-07-13T02:00:00.000Z",
+        endsAt: "2026-07-13T02:30:00.000Z",
+        completed: true,
+      },
+      {
+        title: "录制3条可剪辑口播",
+        minutes: 60,
+        startsAt: "2026-07-13T06:00:00.000Z",
+        endsAt: "2026-07-13T07:00:00.000Z",
+        completed: false,
+      },
+    ],
+  });
+  ops.replaceSchedule({ date: "2026-07-13", blocks: [{
+    taskId: "video-task",
+    checkpointIndex: 1,
+    startsAt: "2026-07-13T06:00:00.000Z",
+    endsAt: "2026-07-13T07:00:00.000Z",
+    status: "planned",
+    reason: "original scope",
+  }] });
+  const policy = createCheckpointPolicy({
+    manager,
+    tasks,
+    links: storedRuntime,
+    timezone: "Asia/Shanghai",
+    getSchedule: (date) => ({ date, blocks: ops.currentSchedule(date) }),
+  });
+  const source = messageAt("om-delay", "来不及拍3条了，今天缩减为先拍1条", "2026-07-13T03:50:00.000Z");
+  let analyzerCalls = 0;
+  let pushes = 0;
+  let deliveries = 0;
+  const worker = createOutboxWorker({
+    ops,
+    clock: { now: () => new Date(now) },
+    send: async () => { deliveries += 1; return { messageId: `reply-${deliveries}` }; },
+  });
+  const runner = createCheckpointRunner({
+    config: { timezone: "Asia/Shanghai", managerUserId: "ou-owner" },
+    runtime,
+    resolveChatId: async () => "oc-p2p",
+    pollMessages: async () => [source],
+    taskSync: {
+      pullProgress: async () => ({ completedTasks: [], completedCheckpoints: [] }),
+      pushSchedule: async () => { pushes += 1; return { tasks: [] }; },
+    },
+    analyzer: {
+      analyzeCheckpointMessages: async () => {
+        analyzerCalls += 1;
+        return { items: [{
+          messageIds: ["om-delay"],
+          disposition: "task_feedback",
+          taskId: "video-task",
+          title: "缩减为录制1条口播",
+          nextAction: "录制1条可剪辑口播",
+          doneDefinition: "1条可剪辑原片已提交",
+          estimateMinutes: 30,
+          checkpoints: [{ title: "录制1条可剪辑口播", minutes: 30 }],
+        }] };
+      },
+    },
+    policy,
+    ops,
+    outboxWorker: worker,
+    clock: { now: () => new Date(now) },
+    buildAnalysisContext: ({ workDate }) => ({ schedule: { date: workDate, blocks: ops.currentSchedule(workDate) } }),
+    getCompletedNodes: () => [],
+    owner: () => "retry-runner",
+  });
+
+  try {
+    await assert.rejects(
+      runner.run({ now, forcedNode: "12:00" }),
+      /crash after main summary delivery/,
+    );
+    const afterFirst = tasks.findById("video-task");
+    await runner.run({ now, forcedNode: "12:00" });
+
+    assert.equal(analyzerCalls, 1);
+    assert.equal(feedbackUpdates, 1);
+    assert.deepEqual(tasks.findById("video-task"), afterFirst);
+    assert.deepEqual([...new Set(ops.listScheduleHistory("2026-07-13").map((block) => block.version))], [1, 2]);
+    assert.equal(ops.listEvents({ taskId: "video-task", kind: "task_feedback_applied" }).length, 1);
+    assert.equal(ops.listOutbox().filter((row) => row.kind === "private_checkpoint_summary").length, 1);
+    assert.equal(deliveries, 1);
+    assert.equal(pushes, 2);
+  } finally {
+    db.close();
+  }
 });
 
 test("refuses to queue a private summary without the owner open_id", async () => {

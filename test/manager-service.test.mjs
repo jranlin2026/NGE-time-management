@@ -3,6 +3,7 @@ import test from "node:test";
 import { openDatabase, withTransaction } from "../src/db/database.mjs";
 import { createTaskRepository } from "../src/db/task-repository.mjs";
 import { createOperationsRepository } from "../src/db/operations-repository.mjs";
+import { createAutomationRepository } from "../src/db/automation-repository.mjs";
 import { createManagerService } from "../src/lib/manager-service.mjs";
 import { createCheckpointPolicy } from "../src/lib/checkpoint-policy.mjs";
 
@@ -47,6 +48,20 @@ function setup(overrides = {}) {
     ...overrides,
   });
   return { db, tasks, ops, manager, scheduled };
+}
+
+function taskFeedback(overrides = {}) {
+  return {
+    messageIds: ["om-feedback"],
+    disposition: "task_feedback",
+    taskId: "video-task",
+    title: "缩减为录制1条口播",
+    nextAction: "录制1条可剪辑口播",
+    doneDefinition: "1条可剪辑原片已提交",
+    estimateMinutes: 30,
+    checkpoints: [{ title: "录制1条可剪辑口播", minutes: 30 }],
+    ...overrides,
+  };
 }
 
 test("ingests one natural-language task, analyzes it, and ignores duplicate message", async () => {
@@ -443,6 +458,216 @@ test("unknown or vague task feedback stays a candidate and cannot erase scope", 
   assert.deepEqual(tasks.findById("protected-scope"), original);
   assert.equal(result.actions.filter((action) => action.type === "candidate_recorded").length, 2);
   assert.equal(result.actions.some((action) => action.type === "task_feedback"), false);
+  db.close();
+});
+
+test("task feedback cannot redirect an unrelated referenced message through a model task id", async () => {
+  const { db, tasks, ops, manager } = setup();
+  const original = tasks.create({
+    id: "video-task",
+    title: "个人IP｜录制3条口播",
+    rawInput: "录制3条口播",
+    status: "scheduled",
+    estimateMinutes: 60,
+    nextAction: "录制3条口播",
+    doneDefinition: "3条可剪辑原片已提交",
+    checkpoints: [{ title: "录制3条可剪辑口播", minutes: 60, completed: false }],
+  });
+  tasks.create({
+    id: "finance-task",
+    title: "极享OS｜完成财务模块对账",
+    rawInput: "完成财务模块对账",
+    status: "scheduled",
+    checkpoints: [{ title: "核对财务模块订单数据", minutes: 30, completed: false }],
+  });
+  const policy = createCheckpointPolicy({
+    manager,
+    tasks,
+    timezone: "Asia/Shanghai",
+    getSchedule: (date) => ({ date, blocks: ops.currentSchedule(date) }),
+  });
+
+  const result = await policy.apply({
+    node: "09:00",
+    workDate: "2026-07-10",
+    now: "2026-07-10T01:00:00.000Z",
+    messages: [
+      { messageId: "om-feedback", content: { text: "财务模块对账今天缩减为只核对订单" } },
+      { messageId: "om-unreferenced", content: { text: "录制3条口播今天缩减为先拍1条" } },
+    ],
+    remoteProgress: { completedTasks: [], completedCheckpoints: [] },
+    analysis: { items: [taskFeedback()] },
+  });
+
+  assert.deepEqual(tasks.findById("video-task"), original);
+  assert.equal(result.actions.some((action) => action.type === "task_feedback"), false);
+  assert.equal(result.actions.some((action) => action.type === "candidate_recorded"), true);
+  db.close();
+});
+
+test("task feedback rejects an ambiguous source shared by two current task titles", async () => {
+  const { db, tasks, ops, manager } = setup();
+  const original = tasks.create({
+    id: "video-task",
+    title: "录制3条口播",
+    rawInput: "上午录制3条口播",
+    status: "scheduled",
+    estimateMinutes: 60,
+    nextAction: "录制3条口播",
+    doneDefinition: "3条可剪辑原片已提交",
+    checkpoints: [{ title: "录制3条可剪辑口播", minutes: 60, completed: false }],
+  });
+  tasks.create({
+    id: "second-video-task",
+    title: "录制3条口播",
+    rawInput: "晚上录制3条口播",
+    status: "scheduled",
+    estimateMinutes: 60,
+    checkpoints: [{ title: "录制3条可剪辑口播", minutes: 60, completed: false }],
+  });
+  const policy = createCheckpointPolicy({
+    manager,
+    tasks,
+    timezone: "Asia/Shanghai",
+    getSchedule: (date) => ({ date, blocks: ops.currentSchedule(date) }),
+  });
+
+  const result = await policy.apply({
+    node: "09:00",
+    workDate: "2026-07-10",
+    now: "2026-07-10T01:00:00.000Z",
+    messages: [{ messageId: "om-feedback", content: { text: "录制3条口播今天缩减为先拍1条" } }],
+    remoteProgress: { completedTasks: [], completedCheckpoints: [] },
+    analysis: { items: [taskFeedback()] },
+  });
+
+  assert.deepEqual(tasks.findById("video-task"), original);
+  assert.equal(result.actions.some((action) => action.type === "task_feedback"), false);
+  db.close();
+});
+
+test("task feedback never reopens or rewrites pending acceptance scope", async () => {
+  const { db, tasks, ops, manager } = setup();
+  const original = tasks.create({
+    id: "video-task",
+    title: "个人IP｜录制3条口播",
+    rawInput: "录制3条口播",
+    status: "pending_acceptance",
+    estimateMinutes: 60,
+    nextAction: "录制3条口播",
+    doneDefinition: "3条可剪辑原片已提交",
+    checkpoints: [{ title: "录制3条可剪辑口播", minutes: 60, completed: false }],
+  });
+  const policy = createCheckpointPolicy({
+    manager,
+    tasks,
+    timezone: "Asia/Shanghai",
+    getSchedule: (date) => ({ date, blocks: ops.currentSchedule(date) }),
+  });
+
+  const result = await policy.apply({
+    node: "09:00",
+    workDate: "2026-07-10",
+    now: "2026-07-10T01:00:00.000Z",
+    messages: [{ messageId: "om-feedback", content: { text: "录制3条口播今天缩减为先拍1条" } }],
+    remoteProgress: { completedTasks: [], completedCheckpoints: [] },
+    analysis: { items: [taskFeedback()] },
+  });
+
+  assert.deepEqual(tasks.findById("video-task"), original);
+  assert.equal(result.actions.some((action) => action.type === "task_feedback"), false);
+  db.close();
+});
+
+test("task feedback rejects out-of-order completion instead of renumbering checkpoint identity", async () => {
+  const { db, tasks, ops, manager } = setup();
+  const original = tasks.create({
+    id: "video-task",
+    title: "个人IP｜录制3条口播",
+    rawInput: "录制3条口播",
+    status: "scheduled",
+    estimateMinutes: 60,
+    nextAction: "录制3条口播",
+    doneDefinition: "3条可剪辑原片已提交",
+    checkpoints: [
+      { title: "完成3条口播提纲", minutes: 30, completed: false },
+      { title: "录制3条可剪辑口播", minutes: 30, completed: true },
+    ],
+  });
+  const policy = createCheckpointPolicy({
+    manager,
+    tasks,
+    timezone: "Asia/Shanghai",
+    getSchedule: (date) => ({ date, blocks: ops.currentSchedule(date) }),
+  });
+
+  const result = await policy.apply({
+    node: "09:00",
+    workDate: "2026-07-10",
+    now: "2026-07-10T01:00:00.000Z",
+    messages: [{ messageId: "om-feedback", content: { text: "录制3条口播今天缩减为先拍1条" } }],
+    remoteProgress: { completedTasks: [], completedCheckpoints: [] },
+    analysis: { items: [taskFeedback()] },
+  });
+
+  assert.deepEqual(tasks.findById("video-task"), original);
+  assert.equal(result.actions.some((action) => action.type === "task_feedback"), false);
+  db.close();
+});
+
+test("task feedback rejects a structural shrink that would orphan a linked Feishu child", async () => {
+  const { db, tasks, ops, manager } = setup();
+  const links = createAutomationRepository(db, { now: () => NOW });
+  const original = tasks.create({
+    id: "video-task",
+    title: "个人IP｜录制3条口播",
+    rawInput: "录制3条口播",
+    status: "scheduled",
+    estimateMinutes: 90,
+    nextAction: "录制3条口播",
+    doneDefinition: "3条可剪辑原片已提交",
+    checkpoints: [
+      { title: "完成第1条口播", minutes: 30, completed: false },
+      { title: "完成第2条口播", minutes: 30, completed: false },
+      { title: "完成第3条口播", minutes: 30, completed: false },
+    ],
+  });
+  links.upsertFeishuLink({
+    localTaskId: "video-task",
+    checkpointIndex: 2,
+    taskGuid: "child-2",
+    parentGuid: "parent-1",
+    snapshotHash: "old",
+  });
+  const policy = createCheckpointPolicy({
+    manager,
+    tasks,
+    links,
+    timezone: "Asia/Shanghai",
+    getSchedule: (date) => ({ date, blocks: ops.currentSchedule(date) }),
+  });
+
+  const result = await policy.apply({
+    node: "09:00",
+    workDate: "2026-07-10",
+    now: "2026-07-10T01:00:00.000Z",
+    messages: [{ messageId: "om-feedback", content: { text: "录制3条口播今天缩减为只录2条" } }],
+    remoteProgress: { completedTasks: [], completedCheckpoints: [] },
+    analysis: { items: [taskFeedback({
+      title: "缩减为录制2条口播",
+      nextAction: "录制2条可剪辑口播",
+      doneDefinition: "2条可剪辑原片已提交",
+      estimateMinutes: 60,
+      checkpoints: [
+        { title: "完成第1条可剪辑口播", minutes: 30 },
+        { title: "完成第2条可剪辑口播", minutes: 30 },
+      ],
+    })] },
+  });
+
+  assert.deepEqual(tasks.findById("video-task"), original);
+  assert.equal(result.actions.some((action) => action.type === "task_feedback"), false);
+  assert.equal(links.findFeishuLink("video-task", 2).taskGuid, "child-2");
   db.close();
 });
 
