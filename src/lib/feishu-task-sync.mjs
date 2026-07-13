@@ -159,11 +159,19 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
         null,
         false,
       ));
+      const remoteChildren = await api.listSubtasks(config, parentLink.taskGuid);
+      const remoteChildrenByGuid = new Map((remoteChildren || []).map((task) => [task.guid, task]));
       const taskLinksByCheckpoint = new Map(taskLinks.map((link) => [link.checkpointIndex, link]));
       for (const [checkpointIndex, checkpoint] of (localTask.checkpoints || []).entries()) {
         const childLink = taskLinksByCheckpoint.get(checkpointIndex);
         if (!childLink) continue;
         const interval = checkpoint.completed ? checkpointInterval(localTask.id, checkpointIndex, checkpoint, new Map()) : null;
+        if (!checkpoint.completed && !childWasScheduledForDate({
+          remoteTask: remoteChildrenByGuid.get(childLink.taskGuid),
+          checkpoint,
+          date,
+          timezone: config.timezone,
+        })) continue;
         await updateLinkedRemote(childLink, managedFields(
           localTask,
           checkpointIndex,
@@ -298,11 +306,38 @@ function completedAt(task) {
 function wasRemotelyScheduledForDate(remoteTask, localTask, date, timezone = "Asia/Shanghai") {
   const start = remoteTaskInstant(remoteTask, "start");
   const due = remoteTaskInstant(remoteTask, "due");
-  if (start || due) {
-    return (start && localDate(start, timezone) === date)
-      || (due && localDate(new Date(due.getTime() - 1), timezone) === date);
-  }
+  const remoteMatch = intervalMatchesDate(start, due, date, timezone);
+  if (remoteMatch != null) return remoteMatch;
   return String(localTask?.dueAt || "").slice(0, 10) === date;
+}
+
+function childWasScheduledForDate({ remoteTask, checkpoint, date, timezone = "Asia/Shanghai" }) {
+  const remoteMatch = intervalMatchesDate(
+    remoteTaskInstant(remoteTask, "start"),
+    remoteTaskInstant(remoteTask, "due"),
+    date,
+    timezone,
+  );
+  if (remoteMatch != null) return remoteMatch;
+  const localMatch = intervalMatchesDate(
+    parseInstant(checkpoint?.startsAt),
+    parseInstant(checkpoint?.endsAt),
+    date,
+    timezone,
+  );
+  return localMatch ?? true;
+}
+
+function intervalMatchesDate(start, due, date, timezone) {
+  if (!start && !due) return null;
+  return Boolean((start && localDate(start, timezone) === date)
+    || (due && localDate(new Date(due.getTime() - 1), timezone) === date));
+}
+
+function parseInstant(value) {
+  if (value == null || value === "") return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp) : null;
 }
 
 function remoteTaskInstant(task, field) {

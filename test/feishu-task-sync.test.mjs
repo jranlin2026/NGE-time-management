@@ -80,7 +80,7 @@ function detailedSyncFixture({ localTasks, schedule }) {
     api,
     scheduleForDate: () => schedule,
   });
-  return { api, links, schedule, sync };
+  return { api, links, remoteChildren, schedule, sync };
 }
 
 test("clears a due-today linked outcome and unfinished children when the outcome leaves the schedule", async () => {
@@ -263,6 +263,106 @@ test("does not clear a removed linked outcome whose remote interval belongs to a
   await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
 
   assert.deepEqual(fixture.api.updated, []);
+});
+
+test("trimming today preserves a future child and completed child history in a multi-day task", async () => {
+  const multiDayTask = {
+    id: "task-multi-day",
+    title: "个人IP｜完成两日发布准备",
+    project: "个人IP",
+    nextAction: "完成今天脚本",
+    estimateMinutes: 60,
+    dueAt: "2026-07-14",
+    doneDefinition: "今天脚本和明天选题均已准备",
+    status: "scheduled",
+    checkpoints: [
+      {
+        title: "完成今天脚本",
+        minutes: 20,
+        startsAt: "2026-07-13T02:00:00.000Z",
+        endsAt: "2026-07-13T02:20:00.000Z",
+        completed: false,
+      },
+      {
+        title: "准备明天选题",
+        minutes: 20,
+        startsAt: "2026-07-14T02:00:00.000Z",
+        endsAt: "2026-07-14T02:20:00.000Z",
+        completed: false,
+      },
+      {
+        title: "保存昨日素材",
+        minutes: 20,
+        startsAt: "2026-07-12T02:00:00.000Z",
+        endsAt: "2026-07-12T02:20:00.000Z",
+        completed: true,
+      },
+    ],
+  };
+  const schedule = { blocks: [
+    { taskId: multiDayTask.id, checkpointIndex: 0, startsAt: "2026-07-13T02:00:00.000Z", endsAt: "2026-07-13T02:20:00.000Z" },
+    { taskId: multiDayTask.id, checkpointIndex: 1, startsAt: "2026-07-14T02:00:00.000Z", endsAt: "2026-07-14T02:20:00.000Z" },
+  ] };
+  const fixture = detailedSyncFixture({ localTasks: [multiDayTask], schedule });
+
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+  fixture.api.remoteParents[0].start = { timestamp: String(Date.parse("2026-07-13T02:00:00.000Z")), is_all_day: false };
+  fixture.api.remoteParents[0].due = { timestamp: String(Date.parse("2026-07-14T02:20:00.000Z")), is_all_day: false };
+  const children = fixture.remoteChildren.get("parent-1");
+  children[1].start = { timestamp: String(Date.parse("2026-07-14T02:00:00.000Z")), is_all_day: false };
+  children[1].due = { timestamp: String(Date.parse("2026-07-14T02:20:00.000Z")), is_all_day: false };
+  schedule.blocks = [];
+
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+
+  assert.deepEqual(fixture.api.updated.map((item) => item.guid), ["parent-1", "parent-1-child-1"]);
+  assert.deepEqual(buildTaskUpdateBody(fixture.api.updated[0].body).task.start, null);
+  assert.deepEqual(buildTaskUpdateBody(fixture.api.updated[1].body).task.start, null);
+  assert.equal(fixture.api.updated.some((item) => item.guid === "parent-1-child-2"), false);
+  assert.equal(fixture.api.updated.some((item) => item.guid === "parent-1-child-3"), false);
+});
+
+test("trimming uses the local child interval when the remote child has no time", async () => {
+  const task = {
+    id: "task-local-fallback",
+    title: "极享OS｜完成两日验收",
+    project: "极享OS",
+    nextAction: "完成今天抽测",
+    estimateMinutes: 40,
+    dueAt: "2026-07-14",
+    doneDefinition: "两日抽测完成",
+    status: "scheduled",
+    checkpoints: [
+      {
+        title: "完成今天抽测",
+        minutes: 20,
+        startsAt: "2026-07-13T06:00:00.000Z",
+        endsAt: "2026-07-13T06:20:00.000Z",
+        completed: false,
+      },
+      {
+        title: "完成明天复核",
+        minutes: 20,
+        startsAt: "2026-07-14T06:00:00.000Z",
+        endsAt: "2026-07-14T06:20:00.000Z",
+        completed: false,
+      },
+    ],
+  };
+  const schedule = { blocks: [
+    { taskId: task.id, checkpointIndex: 0, startsAt: "2026-07-13T06:00:00.000Z", endsAt: "2026-07-13T06:20:00.000Z" },
+    { taskId: task.id, checkpointIndex: 1, startsAt: "2026-07-14T06:00:00.000Z", endsAt: "2026-07-14T06:20:00.000Z" },
+  ] };
+  const fixture = detailedSyncFixture({ localTasks: [task], schedule });
+
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+  fixture.api.remoteParents[0].start = { timestamp: String(Date.parse("2026-07-13T06:00:00.000Z")), is_all_day: false };
+  fixture.api.remoteParents[0].due = { timestamp: String(Date.parse("2026-07-14T06:20:00.000Z")), is_all_day: false };
+  schedule.blocks = [];
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+
+  assert.deepEqual(fixture.api.updated.map((item) => item.guid), ["parent-1", "parent-1-child-1"]);
+  assert.equal(fixture.api.updated.some((item) => item.guid === "parent-1-child-2"), false);
 });
 
 test("syncs each outcome once with detailed parent fields and its own timed checkpoint children", async () => {
