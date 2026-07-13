@@ -48,6 +48,7 @@ function detailedSyncFixture({ localTasks, schedule }) {
     findFeishuLink(localTaskId, checkpointIndex) { return storedLinks.get(`${localTaskId}:${checkpointIndex}`) || null; },
     upsertFeishuLink(link) { storedLinks.set(`${link.localTaskId}:${link.checkpointIndex}`, link); return link; },
     listFeishuLinks(localTaskId) { return [...storedLinks.values()].filter((link) => link.localTaskId === localTaskId); },
+    listAllFeishuLinks() { return [...storedLinks.values()]; },
   };
   const api = {
     createdParents: [], createdChildren: [], updated: [], remoteParents: [],
@@ -71,13 +72,94 @@ function detailedSyncFixture({ localTasks, schedule }) {
   };
   const sync = createFeishuTaskSynchronizer({
     config: { feishuTasklistGuid: "list-1" },
-    tasks: { findById(id) { return taskById.get(id) || null; } },
+    tasks: {
+      findById(id) { return taskById.get(id) || null; },
+      listActive() { return [...taskById.values()].filter((task) => !["done", "cancelled"].includes(task.status)); },
+    },
     links,
     api,
     scheduleForDate: () => schedule,
   });
   return { api, links, schedule, sync };
 }
+
+test("clears a due-today linked outcome and unfinished children when the outcome leaves the schedule", async () => {
+  const removedTask = {
+    id: "task-ip",
+    title: "个人IP｜交付3条可剪辑原片",
+    project: "个人IP",
+    nextAction: "确定3个选题",
+    estimateMinutes: 60,
+    dueAt: "2026-07-13",
+    doneDefinition: "3条原片可剪辑",
+    status: "scheduled",
+    checkpoints: [
+      { title: "确定3个选题", minutes: 20, doneDefinition: "3个选题已确认", completed: false },
+      { title: "完成脚本", minutes: 40, doneDefinition: "脚本可直接口播", completed: false },
+    ],
+  };
+  const retainedTask = {
+    id: "task-os",
+    title: "极享OS｜完成线索模块验收",
+    project: "极享OS",
+    nextAction: "核对字段",
+    estimateMinutes: 45,
+    dueAt: "2026-07-13",
+    doneDefinition: "一名员工完成真实录入",
+    status: "scheduled",
+    checkpoints: [
+      { title: "核对字段", minutes: 45, doneDefinition: "字段和权限已确认", completed: false },
+    ],
+  };
+  const schedule = {
+    blocks: [
+      { taskId: "task-ip", checkpointIndex: 0, startsAt: "2026-07-13T02:00:00.000Z", endsAt: "2026-07-13T02:20:00.000Z" },
+      { taskId: "task-ip", checkpointIndex: 1, startsAt: "2026-07-13T02:20:00.000Z", endsAt: "2026-07-13T03:00:00.000Z" },
+      { taskId: "task-os", checkpointIndex: 0, startsAt: "2026-07-13T06:00:00.000Z", endsAt: "2026-07-13T06:45:00.000Z" },
+    ],
+  };
+  const fixture = detailedSyncFixture({ localTasks: [removedTask, retainedTask], schedule });
+
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+  schedule.blocks = schedule.blocks.filter((block) => block.taskId === "task-os");
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+
+  assert.deepEqual(fixture.api.updated.map(({ guid, body }) => [guid, buildTaskUpdateBody(body)]), [
+    ["parent-1", {
+      task: {
+        summary: removedTask.title,
+        description: fixture.api.updated[0].body.description,
+        start: null,
+        due: null,
+      },
+      update_fields: ["summary", "description", "start", "due"],
+    }],
+    ["parent-1-child-1", {
+      task: {
+        summary: "确定3个选题",
+        description: fixture.api.updated[1].body.description,
+        start: null,
+        due: null,
+      },
+      update_fields: ["summary", "description", "start", "due"],
+    }],
+    ["parent-1-child-2", {
+      task: {
+        summary: "完成脚本",
+        description: fixture.api.updated[2].body.description,
+        start: null,
+        due: null,
+      },
+      update_fields: ["summary", "description", "start", "due"],
+    }],
+  ]);
+
+  const updatesAfterClear = fixture.api.updated.length;
+  await fixture.sync.pushSchedule({ date: "2026-07-13", schedule });
+  assert.equal(fixture.api.updated.length, updatesAfterClear);
+  assert.equal(fixture.api.createdParents.length, 2);
+  assert.equal(fixture.api.createdChildren.length, 3);
+});
 
 test("syncs each outcome once with detailed parent fields and its own timed checkpoint children", async () => {
   const fixture = detailedSyncFixture({

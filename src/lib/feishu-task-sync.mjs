@@ -67,6 +67,7 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
         }
         results.push({ localTaskId: localTask.id, parentGuid: parent.taskGuid });
       }
+      await clearRemovedTaskSchedules({ date, scheduledTaskIds: new Set(taskIds) });
       return { date, tasks: results };
     },
 
@@ -130,6 +131,54 @@ export function createFeishuTaskSynchronizer({ config, tasks, links, api = defau
       return links.upsertFeishuLink({ ...existing, parentGuid, snapshotHash });
     }
     return existing;
+  }
+
+  async function clearRemovedTaskSchedules({ date, scheduledTaskIds }) {
+    if (typeof tasks?.listActive !== "function" || typeof links?.listAllFeishuLinks !== "function") return;
+    const allLinks = links.listAllFeishuLinks();
+    if (!Array.isArray(allLinks)) return;
+    const linksByTask = Map.groupBy(allLinks, (link) => link.localTaskId);
+    const activeTasks = tasks.listActive();
+    if (!Array.isArray(activeTasks)) return;
+
+    for (const localTask of activeTasks) {
+      if (scheduledTaskIds.has(localTask.id) || String(localTask.dueAt || "").slice(0, 10) !== date) continue;
+      const taskLinks = linksByTask.get(localTask.id) || [];
+      const parentLink = taskLinks.find((link) => link.checkpointIndex === -1);
+      if (!parentLink) continue;
+
+      await updateLinkedRemote(parentLink, managedFields(
+        localTask,
+        -1,
+        localTask.title,
+        parentDescription(localTask),
+        null,
+        null,
+        false,
+      ));
+      const taskLinksByCheckpoint = new Map(taskLinks.map((link) => [link.checkpointIndex, link]));
+      for (const [checkpointIndex, checkpoint] of (localTask.checkpoints || []).entries()) {
+        const childLink = taskLinksByCheckpoint.get(checkpointIndex);
+        if (!childLink) continue;
+        const interval = checkpoint.completed ? checkpointInterval(localTask.id, checkpointIndex, checkpoint, new Map()) : null;
+        await updateLinkedRemote(childLink, managedFields(
+          localTask,
+          checkpointIndex,
+          childSummary(checkpoint, interval, config.timezone),
+          childDescription(checkpoint),
+          interval ? interval.startAt : checkpoint.completed ? undefined : null,
+          interval ? interval.dueAt : checkpoint.completed ? undefined : null,
+          checkpoint.completed,
+        ));
+      }
+    }
+  }
+
+  async function updateLinkedRemote(link, fields) {
+    const snapshotHash = hash(fields);
+    if (link.snapshotHash === snapshotHash) return link;
+    await api.updateTask(config, link.taskGuid, fields);
+    return links.upsertFeishuLink({ ...link, snapshotHash });
   }
 }
 
