@@ -206,8 +206,9 @@ function checkpointRunKey({ workDate, node, replayToken }) {
 }
 
 function privateSummaryKey({ workDate, node, scheduleVersion, digest, replayToken }) {
+  if (replayToken) return `private-summary:${workDate}:${node}:replay:${replayToken}`;
   const ordinaryKey = `private-summary:${workDate}:${node}:${scheduleVersion}:${digest}`;
-  return replayToken ? `${ordinaryKey}:replay:${replayToken}` : ordinaryKey;
+  return ordinaryKey;
 }
 
 function normalizeInbound(message, chatId) {

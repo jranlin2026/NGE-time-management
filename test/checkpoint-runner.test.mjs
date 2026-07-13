@@ -110,7 +110,7 @@ test("controlled replay uses distinct run and private-summary keys without chang
   assert.equal(fixture.claims[0].runKey, "2026-07-13:08:00:replay:brief-v2");
   assert.equal(fixture.runStatuses.get("2026-07-13:08:00"), "completed");
   assert.equal(fixture.runStatuses.get("2026-07-13:08:00:replay:brief-v2"), "completed");
-  assert.match(fixture.outbox[0].idempotencyKey, /^private-summary:2026-07-13:08:00:3:[a-f0-9]{64}:replay:brief-v2$/);
+  assert.equal(fixture.outbox[0].idempotencyKey, "private-summary:2026-07-13:08:00:replay:brief-v2");
 });
 
 test("the same controlled replay token claims once and creates no second sync or DM", async () => {
@@ -132,6 +132,51 @@ test("the same controlled replay token claims once and creates no second sync or
   assert.equal(fixture.successfulClaims.filter((runKey) => runKey === "2026-07-13:08:00:replay:brief-v2").length, 1);
   assert.equal(fixture.calls.filter((call) => call === "push").length, firstPushes);
   assert.equal(fixture.outbox.length, firstReplies);
+});
+
+test("controlled replay retry delivers one private summary when finalize fails and plan inputs change", async () => {
+  const first = messageAt("om-replay-a", "重新发送执行令", "2026-07-13T00:15:00.000Z");
+  const second = messageAt("om-replay-b", "增加一项工作", "2026-07-13T00:20:00.000Z");
+  let pollCall = 0;
+  let scheduleVersion = 3;
+  let deliveries = 0;
+  const fixture = runnerFixture({
+    pollMessages: () => (++pollCall === 1 ? [first] : [first, second]),
+    finalizeErrorOnce: true,
+    analyze: async ({ messages }) => ({
+      items: messages.map((item) => ({ messageIds: [item.messageId], disposition: "candidate_pool" })),
+    }),
+    applyPolicy: async () => ({
+      replyRequired: true,
+      reply: "同一执行令",
+      actions: [],
+      schedule: { version: scheduleVersion++, blocks: [] },
+    }),
+  });
+  const db = openDatabase(":memory:");
+  const ops = createOperationsRepository(db, { now: () => "2026-07-13T00:30:00.000Z" });
+  const worker = createOutboxWorker({
+    ops,
+    clock: { now: () => new Date("2026-07-13T00:30:00.000Z") },
+    send: async () => { deliveries += 1; return {}; },
+  });
+  fixture.setDelivery({ ops, outboxWorker: worker });
+  const input = {
+    now: "2026-07-13T08:30:00+08:00",
+    forcedNode: "08:00",
+    replayToken: "brief-v2",
+  };
+
+  try {
+    await assert.rejects(fixture.runner.run(input), /before atomic finalize/);
+    await fixture.runner.run(input);
+
+    assert.equal(deliveries, 1);
+    assert.equal(ops.listOutbox().length, 1);
+    assert.deepEqual(fixture.pending, []);
+  } finally {
+    db.close();
+  }
 });
 
 test("reconciles stranded project writes once before node processing", async () => {
