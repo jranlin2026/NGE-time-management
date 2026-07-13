@@ -320,7 +320,7 @@ test("remote parent completion is routed through manager acceptance handling fir
     completedCheckpoints: [],
   } });
   assert.deepEqual(fixture.handled[0], {
-    action: "complete", taskId: "deliverable", idempotencyKey: "feishu-parent:deliverable:2026-07-13T03:00:00.000Z", deliveryMode: "task_dm", suppressOutbox: true,
+    action: "complete", taskId: "deliverable", date: "2026-07-13", idempotencyKey: "feishu-parent:deliverable:2026-07-13T03:00:00.000Z", deliveryMode: "task_dm", suppressOutbox: true,
   });
   assert.equal(result.replyRequired, true);
   assert.match(result.reply, /已同步主任务完成.*验收证据/);
@@ -354,6 +354,34 @@ test("24:00 checkpoint completion replans the prior work date", async () => {
     checkpointIndex: 0,
     date: "2026-07-13",
     idempotencyKey: `feishu-checkpoint:prior-day-task:0:${completedAt}`,
+    deliveryMode: "task_dm",
+    suppressOutbox: true,
+  });
+});
+
+test("24:00 parent completion replans the prior work date", async () => {
+  const completedAt = "2026-07-13T16:00:00.000Z";
+  const fixture = policyFixture({
+    scheduledTask: task({ id: "prior-day-parent" }),
+    handleActionResult: { action: "complete", schedule: { date: "2026-07-13", blocks: [] } },
+  });
+
+  await fixture.policy.apply({
+    node: "24:00",
+    workDate: "2026-07-13",
+    messages: [],
+    analysis: { items: [] },
+    remoteProgress: {
+      completedTasks: [{ localTaskId: "prior-day-parent", completedAt }],
+      completedCheckpoints: [],
+    },
+  });
+
+  assert.deepEqual(fixture.handled[0], {
+    action: "complete",
+    taskId: "prior-day-parent",
+    date: "2026-07-13",
+    idempotencyKey: `feishu-parent:prior-day-parent:${completedAt}`,
     deliveryMode: "task_dm",
     suppressOutbox: true,
   });

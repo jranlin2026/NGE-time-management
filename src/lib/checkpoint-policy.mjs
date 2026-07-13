@@ -90,6 +90,7 @@ async function applyRemoteProgress(state, deps) {
     const result = await deps.manager.handleAction({
       action: "complete",
       taskId: change.localTaskId,
+      date: state.workDate,
       idempotencyKey: `feishu-parent:${change.taskGuid || change.localTaskId}:${change.completedAt}`,
       deliveryMode: "task_dm",
       suppressOutbox: true,

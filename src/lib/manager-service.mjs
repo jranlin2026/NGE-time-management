@@ -242,7 +242,12 @@ export function createManagerService(deps) {
     if (input.action === "complete" && input.deliveryMode !== "task_dm") {
       enqueueFeishuTaskCompletion(updated);
     }
-    const schedule = await replanDay({ reason: `task_${input.action}`, deliveryMode: input.deliveryMode });
+    const schedule = await replanDay({
+      reason: `task_${input.action}`,
+      deliveryMode: input.deliveryMode,
+      date: input.date,
+      now: input.now,
+    });
     return { action: input.action, task: tasks.findById(task.id), minimumAction: minimum, schedule };
   }
 

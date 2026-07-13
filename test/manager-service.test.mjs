@@ -85,6 +85,36 @@ test("completes a task and replans future blocks", async () => {
   db.close();
 });
 
+test("parent completion replans the supplied prior work date without replacing today", async () => {
+  const { db, tasks, ops, manager } = setup();
+  tasks.create({ id: "prior-parent", rawInput: "完成昨日交付", status: "doing" });
+  tasks.create({ id: "today-task", rawInput: "今天任务", status: "ready" });
+  ops.replaceSchedule({
+    date: "2026-07-10",
+    blocks: [{
+      taskId: "today-task",
+      startsAt: "2026-07-10T02:00:00.000Z",
+      endsAt: "2026-07-10T02:30:00.000Z",
+      status: "planned",
+      reason: "test schedule",
+    }],
+  });
+  const todayBefore = ops.currentSchedule("2026-07-10");
+
+  const result = await manager.handleAction({
+    action: "complete",
+    taskId: "prior-parent",
+    date: "2026-07-09",
+    idempotencyKey: "prior-parent-complete",
+    deliveryMode: "task_dm",
+    suppressOutbox: true,
+  });
+
+  assert.equal(result.schedule.date, "2026-07-09");
+  assert.deepEqual(ops.currentSchedule("2026-07-10"), todayBefore);
+  db.close();
+});
+
 test("requires evidence before completing a project deliverable", async () => {
   const { db, tasks, ops, manager } = setup();
   const task = tasks.create({ id: "critical", rawInput: "发布视频", title: "发布视频", status: "doing", requiresEvidence: true });
