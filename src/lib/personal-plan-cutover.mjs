@@ -29,6 +29,9 @@ export function parsePersonalPlanCutoverArgs(args) {
   if (!options.workDate || !options.retainedLocalTaskId || !options.obsoleteLocalTaskId) {
     throw new Error("cutover prepare requires work date and both source task ids");
   }
+  if (options.targetLocalTaskId && options.targetLocalTaskId !== DEFAULT_TARGET_LOCAL_TASK_ID) {
+    throw new Error("cutover requires the approved consolidated target");
+  }
   options.targetLocalTaskId ||= DEFAULT_TARGET_LOCAL_TASK_ID;
   return options;
 }
@@ -58,6 +61,7 @@ export function classifyPersonalPlanCutover({
 }) {
   validateWorkDate(workDate);
   requireDistinctLocalIds(retainedLocalTaskId, obsoleteLocalTaskId, targetLocalTaskId);
+  requireApprovedTarget(targetLocalTaskId);
   const parents = Array.isArray(remoteParents) ? remoteParents : [];
   const links = Array.isArray(managedLinks) ? managedLinks : [];
   const sentLegacyGuids = asSet(legacyTaskGuids);
@@ -134,6 +138,8 @@ export async function preparePersonalPlanCutover({
   now = () => new Date().toISOString(),
 }) {
   requirePrepareDependencies({ manifestDir, repo, api });
+  requireApprovedTarget(targetLocalTaskId);
+  if (!repo.localTaskExists(targetLocalTaskId)) throw new Error("cutover approved target task is missing");
   const snapshot = await readRemoteSnapshot(api, config);
   const classified = classifyPersonalPlanCutover({
     workDate,
@@ -166,6 +172,7 @@ export async function applyPersonalPlanCutover({
   requireApplyDependencies({ manifestPath, manifestDir, repo, api });
   const manifest = await loadPrivateManifest(manifestPath, manifestDir);
   validateManifest(manifest, expectedWorkDate);
+  if (!repo.localTaskExists(manifest.localIds.target)) throw new Error("cutover approved target task is missing");
 
   const state = localLinkState(repo, manifest);
   if (state === "applied") {
@@ -179,6 +186,7 @@ export async function applyPersonalPlanCutover({
   const snapshot = await readRemoteSnapshot(api, config);
   const remoteByGuid = await readManifestStatuses(api, config, manifest);
   revalidateRemoteSnapshot({ manifest, snapshot, remoteByGuid, repo });
+  if (!repo.localTaskExists(manifest.localIds.target)) throw new Error("cutover approved target task is missing");
   let remoteDeleted = 0;
   let alreadyMissing = 0;
   for (const item of manifest.deletionOrder) {
@@ -252,7 +260,7 @@ function serializedTree(tree) {
   return {
     links: tree.links,
     parent: remoteEntry(tree.parent),
-    children: tree.children.map(remoteEntry),
+    children: tree.children.map((task, checkpointIndex) => ({ ...remoteEntry(task), checkpointIndex })),
   };
 }
 
@@ -358,6 +366,7 @@ function validateManifest(manifest, expectedWorkDate) {
   validateWorkDate(manifest.workDate);
   if (expectedWorkDate && manifest.workDate !== expectedWorkDate) throw new Error("cutover work date changed");
   requireDistinctLocalIds(manifest.localIds?.retained, manifest.localIds?.obsolete, manifest.localIds?.target);
+  requireApprovedTarget(manifest.localIds.target);
   if (manifest.legacyParents?.length !== 5
     || manifest.completedHistoricalParents?.length !== 5
     || manifest.retainedTree?.links?.length !== 4
@@ -367,6 +376,10 @@ function validateManifest(manifest, expectedWorkDate) {
   }
   if (!sameIndices(manifest.retainedTree.links) || !sameIndices(manifest.obsoleteTree.links)) {
     throw new Error("cutover manifest tree shape is invalid");
+  }
+  if (!validTreeBinding(manifest.retainedTree, manifest.localIds.retained)
+    || !validTreeBinding(manifest.obsoleteTree, manifest.localIds.obsolete)) {
+    throw new Error("cutover manifest tree binding is invalid");
   }
   const requiredEntries = [
     ...manifest.legacyParents,
@@ -383,25 +396,27 @@ function validateManifest(manifest, expectedWorkDate) {
     ...manifest.retainedTree.children.map((item) => item.guid),
     ...manifest.completedHistoricalParents.map((item) => item.guid),
   ]);
+  const retainedGuids = treeGuids(manifest.retainedTree);
+  const obsoleteGuids = treeGuids(manifest.obsoleteTree);
+  const historyGuids = manifest.completedHistoricalParents.map((item) => item.guid);
   if (requiredEntries.some((item) => !item?.guid || !item?.signature)
     || new Set(deletionGuids).size !== deletionGuids.length
-    || deletionGuids.some((guid) => protectedGuids.has(guid))) {
+    || deletionGuids.some((guid) => protectedGuids.has(guid))
+    || !uniqueAndDisjoint([retainedGuids, obsoleteGuids, historyGuids])) {
     throw new Error("cutover manifest identities are invalid");
   }
   const expectedOrder = [
-    ...[...manifest.legacyParents].sort(byGuid).map((item) => [item.guid, "legacy_parent"]),
-    ...manifest.obsoleteTree.children.map((item) => [item.guid, "obsolete_child"]),
-    [manifest.obsoleteTree.parent.guid, "obsolete_parent"],
+    ...[...manifest.legacyParents].sort(byGuid).map((item) => ({ ...item, kind: "legacy_parent" })),
+    ...manifest.obsoleteTree.children.map((item) => ({ ...item, kind: "obsolete_child" })),
+    { ...manifest.obsoleteTree.parent, kind: "obsolete_parent" },
   ];
-  if (!manifest.deletionOrder.every((item, index) => item.guid === expectedOrder[index][0]
-    && item.kind === expectedOrder[index][1]
-    && typeof item.signature === "string")) {
+  if (!manifest.deletionOrder.every((item, index) => samePlainRecord(item, expectedOrder[index]))) {
     throw new Error("cutover manifest deletion sequence is invalid");
   }
 }
 
 function remoteEntry(task) {
-  return { guid: task.guid, signature: remoteSignature(task) };
+  return { guid: task.guid, parentGuid: task.parent_guid || null, signature: remoteSignature(task) };
 }
 
 function remoteSignature(task) {
@@ -480,13 +495,53 @@ function requireDistinctLocalIds(...ids) {
   }
 }
 
+function requireApprovedTarget(targetLocalTaskId) {
+  if (targetLocalTaskId !== DEFAULT_TARGET_LOCAL_TASK_ID) {
+    throw new Error("cutover requires the approved consolidated target");
+  }
+}
+
+function validTreeBinding(tree, localTaskId) {
+  const [parentLink, ...childLinks] = tree.links;
+  if (parentLink.localTaskId !== localTaskId
+    || parentLink.taskGuid !== tree.parent.guid
+    || parentLink.parentGuid
+    || tree.parent.parentGuid) return false;
+  return tree.children.length === 3 && tree.children.every((child, checkpointIndex) => {
+    const link = childLinks[checkpointIndex];
+    return child.checkpointIndex === checkpointIndex
+      && child.guid === link.taskGuid
+      && child.parentGuid === tree.parent.guid
+      && link.localTaskId === localTaskId
+      && link.checkpointIndex === checkpointIndex
+      && link.parentGuid === tree.parent.guid;
+  });
+}
+
+function treeGuids(tree) {
+  return [tree.parent.guid, ...tree.children.map((item) => item.guid)];
+}
+
+function uniqueAndDisjoint(groups) {
+  const all = groups.flat();
+  return groups.every((group) => new Set(group).size === group.length) && new Set(all).size === all.length;
+}
+
+function samePlainRecord(actual, expected) {
+  if (!actual || !expected) return false;
+  const actualKeys = Object.keys(actual).sort();
+  const expectedKeys = Object.keys(expected).sort();
+  return actualKeys.length === expectedKeys.length
+    && actualKeys.every((key, index) => key === expectedKeys[index] && actual[key] === expected[key]);
+}
+
 function requirePrepareDependencies({ manifestDir, repo, api }) {
-  if (!manifestDir || !repo?.listAllFeishuLinks || !repo?.listSentLegacyTaskGuids
+  if (!manifestDir || !repo?.listAllFeishuLinks || !repo?.listSentLegacyTaskGuids || !repo?.localTaskExists
     || !api?.listTasklistTasks || !api?.listSubtasks) throw new Error("cutover prepare dependencies are incomplete");
 }
 
 function requireApplyDependencies({ manifestPath, manifestDir, repo, api }) {
-  if (!manifestPath || !manifestDir || !repo?.applyPersonalPlanLinkCutover
+  if (!manifestPath || !manifestDir || !repo?.applyPersonalPlanLinkCutover || !repo?.localTaskExists
     || !api?.listTasklistTasks || !api?.listSubtasks || !api?.getTask || !api?.deleteTask) {
     throw new Error("cutover apply dependencies are incomplete");
   }

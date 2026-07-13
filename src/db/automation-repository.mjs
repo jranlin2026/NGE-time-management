@@ -208,6 +208,10 @@ export function createAutomationRepository(db, deps = {}) {
         .all().map(mapLink);
     },
 
+    localTaskExists(localTaskId) {
+      return Boolean(db.prepare("SELECT 1 FROM tasks WHERE id=?").get(localTaskId));
+    },
+
     listSentLegacyTaskGuids() {
       return db.prepare(`SELECT DISTINCT external_id FROM outbox
         WHERE kind='feishu_task_create' AND status='sent' AND external_id IS NOT NULL AND external_id <> ''

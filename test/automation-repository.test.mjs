@@ -215,6 +215,8 @@ test("lists sent legacy task GUIDs and every managed Feishu link for cutover pre
 
   assert.deepEqual(repo.listSentLegacyTaskGuids(), ["legacy-parent"]);
   assert.deepEqual(repo.listAllFeishuLinks().map((link) => [link.localTaskId, link.checkpointIndex]), [["retained-ip", -1]]);
+  assert.equal(repo.localTaskExists("retained-ip"), true);
+  assert.equal(repo.localTaskExists("missing-task"), false);
   db.close();
 });
 

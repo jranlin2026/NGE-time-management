@@ -37,6 +37,12 @@ test("CLI defaults to prepare, never accepts raw GUIDs and requires an explicit 
   });
   assert.throws(() => parsePersonalPlanCutoverArgs(["apply"]), /explicit manifest/);
   assert.throws(() => parsePersonalPlanCutoverArgs(["--guid=remote-id"]), /unsupported argument/);
+  assert.throws(() => parsePersonalPlanCutoverArgs([
+    `--work-date=${WORK_DATE}`,
+    `--retained-task-id=${RETAINED_ID}`,
+    `--obsolete-task-id=${OBSOLETE_ID}`,
+    "--target-task-id=mistyped-target",
+  ]), /approved consolidated target/);
 });
 
 test("legacy duplicate classification requires every safety gate", () => {
@@ -285,6 +291,81 @@ test("apply rejects duplicate, overlapping or unsigned manifest identities befor
     assert.equal(fixture.api.statusCalls.length, 0);
     assert.equal(fixture.api.deleteCalls.length, 0);
   }
+});
+
+test("apply rejects manifest trees whose serialized parents or children are not bound to their links", async (t) => {
+  const mutators = [
+    (manifest) => { manifest.retainedTree.parent = { ...manifest.obsoleteTree.parent }; },
+    (manifest) => {
+      manifest.obsoleteTree.children[0] = {
+        ...manifest.legacyParents[0],
+        checkpointIndex: 0,
+      };
+    },
+    (manifest) => { manifest.completedHistoricalParents[1] = { ...manifest.completedHistoricalParents[0] }; },
+    (manifest) => { manifest.deletionOrder[0].parentGuid = "redirected-parent"; },
+  ];
+  for (const mutate of mutators) {
+    const fixture = await cutoverFixture(t);
+    const prepared = await preparePersonalPlanCutover(fixture.prepareOptions);
+    const manifest = JSON.parse(await fs.readFile(prepared.manifestPath, "utf8"));
+    mutate(manifest);
+    await fs.writeFile(prepared.manifestPath, JSON.stringify(manifest), { mode: 0o600 });
+    await assert.rejects(() => applyPersonalPlanCutover({
+      manifestPath: prepared.manifestPath,
+      manifestDir: fixture.manifestDir,
+      repo: fixture.repo,
+      api: fixture.api,
+      config: {},
+      expectedWorkDate: WORK_DATE,
+    }), /manifest (tree binding|identities|deletion sequence) (is|are) invalid/);
+    assert.equal(fixture.api.statusCalls.length, 0);
+    assert.equal(fixture.api.deleteCalls.length, 0);
+  }
+});
+
+test("prepare and apply require the approved target task before any remote deletion", async (t) => {
+  const missingAtPrepare = await cutoverFixture(t);
+  missingAtPrepare.db.prepare("DELETE FROM tasks WHERE id=?").run(TARGET_ID);
+  await assert.rejects(
+    () => preparePersonalPlanCutover(missingAtPrepare.prepareOptions),
+    /approved target task is missing/,
+  );
+  assert.equal(missingAtPrepare.api.statusCalls.length, 0);
+  assert.equal(missingAtPrepare.api.deleteCalls.length, 0);
+
+  const missingAtApply = await cutoverFixture(t);
+  const prepared = await preparePersonalPlanCutover(missingAtApply.prepareOptions);
+  missingAtApply.db.prepare("DELETE FROM tasks WHERE id=?").run(TARGET_ID);
+  await assert.rejects(() => applyPersonalPlanCutover({
+    manifestPath: prepared.manifestPath,
+    manifestDir: missingAtApply.manifestDir,
+    repo: missingAtApply.repo,
+    api: missingAtApply.api,
+    config: {},
+    expectedWorkDate: WORK_DATE,
+  }), /approved target task is missing/);
+  assert.equal(missingAtApply.api.statusCalls.length, 0);
+  assert.equal(missingAtApply.api.deleteCalls.length, 0);
+
+  const disappearsBeforeDelete = await cutoverFixture(t);
+  const preparedForRace = await preparePersonalPlanCutover(disappearsBeforeDelete.prepareOptions);
+  const exists = disappearsBeforeDelete.repo.localTaskExists.bind(disappearsBeforeDelete.repo);
+  let checks = 0;
+  disappearsBeforeDelete.repo.localTaskExists = (taskId) => {
+    checks += 1;
+    return checks === 1 ? exists(taskId) : false;
+  };
+  await assert.rejects(() => applyPersonalPlanCutover({
+    manifestPath: preparedForRace.manifestPath,
+    manifestDir: disappearsBeforeDelete.manifestDir,
+    repo: disappearsBeforeDelete.repo,
+    api: disappearsBeforeDelete.api,
+    config: {},
+    expectedWorkDate: WORK_DATE,
+  }), /approved target task is missing/);
+  assert.equal(disappearsBeforeDelete.api.statusCalls.length > 0, true);
+  assert.equal(disappearsBeforeDelete.api.deleteCalls.length, 0);
 });
 
 async function cutoverFixture(t) {
