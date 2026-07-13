@@ -3,6 +3,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createCheckpointRunner } from "../src/lib/checkpoint-runner.mjs";
 import { openDatabase } from "../src/db/database.mjs";
@@ -62,6 +63,75 @@ test("dry run performs no writes", async () => {
   assert.equal(result.status, "dry_run");
   assert.deepEqual(fixture.calls, []);
   assert.equal(fixture.outbox.length, 0);
+});
+
+test("controlled replay requires a forced node and never echoes a rejected token", async () => {
+  const missingNode = runnerFixture();
+  await assert.rejects(
+    () => missingNode.runner.run({ now: "2026-07-13T08:30:00+08:00", replayToken: "morning-fix" }),
+    /replay token requires forced checkpoint node/,
+  );
+  assert.deepEqual(missingNode.calls, []);
+
+  const rejected = "Morning-Fix-SECRET";
+  const invalidToken = runnerFixture();
+  await assert.rejects(
+    () => invalidToken.runner.run({ now: "2026-07-13T08:30:00+08:00", forcedNode: "08:00", replayToken: rejected }),
+    (error) => {
+      assert.match(error.message, /invalid replay token/);
+      assert.doesNotMatch(error.message, new RegExp(rejected));
+      return true;
+    },
+  );
+  assert.deepEqual(invalidToken.calls, []);
+});
+
+test("ordinary forced runs retain their original run and private-summary keys", async () => {
+  const fixture = runnerFixture({ messages: [message("om-ordinary", "按原计划执行")] });
+  await fixture.runner.run({ now: "2026-07-13T09:00:00+08:00", forcedNode: "09:00" });
+
+  assert.equal(fixture.claims[0].runKey, "2026-07-13:09:00");
+  assert.equal(fixture.outbox[0].idempotencyKey, `private-summary:2026-07-13:09:00:3:${digestMessages([message("om-ordinary", "按原计划执行")])}`);
+});
+
+test("controlled replay uses distinct run and private-summary keys without changing the ordinary completed row", async () => {
+  const fixture = runnerFixture({
+    messages: [messageAt("om-replay", "重新发送完整执行令", "2026-07-13T00:15:00.000Z")],
+    initialRunStatuses: [["2026-07-13:08:00", "completed"]],
+    idempotentRuns: true,
+  });
+
+  await fixture.runner.run({
+    now: "2026-07-13T08:30:00+08:00",
+    forcedNode: "08:00",
+    replayToken: "brief-v2",
+  });
+
+  assert.equal(fixture.claims[0].runKey, "2026-07-13:08:00:replay:brief-v2");
+  assert.equal(fixture.runStatuses.get("2026-07-13:08:00"), "completed");
+  assert.equal(fixture.runStatuses.get("2026-07-13:08:00:replay:brief-v2"), "completed");
+  assert.match(fixture.outbox[0].idempotencyKey, /^private-summary:2026-07-13:08:00:3:[a-f0-9]{64}:replay:brief-v2$/);
+});
+
+test("the same controlled replay token claims once and creates no second sync or DM", async () => {
+  const fixture = runnerFixture({
+    messages: [messageAt("om-replay", "重新发送完整执行令", "2026-07-13T00:15:00.000Z")],
+    idempotentRuns: true,
+  });
+  const input = {
+    now: "2026-07-13T08:30:00+08:00",
+    forcedNode: "08:00",
+    replayToken: "brief-v2",
+  };
+
+  await fixture.runner.run(input);
+  const firstPushes = fixture.calls.filter((call) => call === "push").length;
+  const firstReplies = fixture.outbox.length;
+  await fixture.runner.run(input);
+
+  assert.equal(fixture.successfulClaims.filter((runKey) => runKey === "2026-07-13:08:00:replay:brief-v2").length, 1);
+  assert.equal(fixture.calls.filter((call) => call === "push").length, firstPushes);
+  assert.equal(fixture.outbox.length, firstReplies);
 });
 
 test("reconciles stranded project writes once before node processing", async () => {
@@ -227,6 +297,16 @@ test("CLI dry-run rejects a misspelled checkpoint node", () => {
   assert.match(result.stdout, /unsupported checkpoint node/);
 });
 
+test("CLI replay token requires an explicit checkpoint node", () => {
+  const result = spawnSync(process.execPath, ["scripts/run-checkpoint.mjs", "--replay-token=brief-v2"], {
+    cwd: path.resolve(import.meta.dirname, ".."), encoding: "utf8",
+    env: { ...process.env, FEISHU_APP_ID: "", FEISHU_APP_SECRET: "" },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /replay token requires forced checkpoint node/);
+  assert.doesNotMatch(result.stdout, /brief-v2/);
+});
+
 test("CLI JSON never exposes a bare bearer credential", () => {
   const result = spawnSync(process.execPath, ["scripts/run-checkpoint.mjs", "--bad=Bearer super-secret"], { cwd: path.resolve(import.meta.dirname, ".."), encoding: "utf8" });
   assert.doesNotMatch(result.stdout, /super-secret/);
@@ -299,7 +379,7 @@ test("pre-recorded pending messages remain isolated by each catch-up cutoff", as
   assert.deepEqual(fixture.finalizedThrough, ["2026-07-12T16:00:00.000Z", "2026-07-13T00:00:00.000Z", "2026-07-13T01:00:00.000Z"]);
 });
 
-function runnerFixture({ messages = [], pendingMessages = [], pollMessages, completedNodes = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, reconcileProjectWrites, buildAnalysisContext, analyze, applyPolicy, pushSchedule, persistAnalysis = false, finalizeErrorOnce = false, executionNow, onClaimLock } = {}) {
+function runnerFixture({ messages = [], pendingMessages = [], pollMessages, completedNodes = [], syncError = null, healthyProgress = false, lockHeld = false, managerUserId = "ou-owner", reconcileRemoteProgress, reconcileProjectWrites, buildAnalysisContext, analyze, applyPolicy, pushSchedule, persistAnalysis = false, finalizeErrorOnce = false, executionNow, onClaimLock, initialRunStatuses = [], idempotentRuns = false } = {}) {
   const calls = [];
   const claims = [];
   const polls = [];
@@ -309,11 +389,19 @@ function runnerFixture({ messages = [], pendingMessages = [], pollMessages, comp
   let cursor = null;
   let shouldFailFinalize = finalizeErrorOnce;
   const savedAnalyses = new Map();
-  const runStatuses = new Map();
+  const runStatuses = new Map(initialRunStatuses);
+  const successfulClaims = [];
   const runtime = {
     claimLock: (input) => { calls.push("lock"); onClaimLock?.(input); return !lockHeld; },
     releaseLock: () => { calls.push("unlock"); },
-    claimRun: (input) => { calls.push("claim"); claims.push(input); runStatuses.set(input.runKey, "running"); return { claimed: true, claimToken: "claim-1" }; },
+    claimRun: (input) => {
+      calls.push("claim");
+      claims.push(input);
+      if (idempotentRuns && runStatuses.get(input.runKey) === "completed") return { claimed: false };
+      runStatuses.set(input.runKey, "running");
+      successfulClaims.push(input.runKey);
+      return { claimed: true, claimToken: "claim-1" };
+    },
     failRun: (runKey) => { calls.push("fail"); runStatuses.set(runKey, "failed"); },
     completeRun: () => { calls.push("complete"); },
     loadRunAnalysis: persistAnalysis ? (runKey) => savedAnalyses.get(runKey) || null : undefined,
@@ -334,6 +422,8 @@ function runnerFixture({ messages = [], pendingMessages = [], pollMessages, comp
       assert.equal(claimToken, "claim-1");
       pending.splice(0, pending.length, ...pending.filter((item) => !messageIds.includes(item.messageId)));
       cursor = polledThrough;
+      const running = [...runStatuses.entries()].find(([, status]) => status === "running");
+      if (running) runStatuses.set(running[0], "completed");
     },
   };
   const deps = {
@@ -360,7 +450,7 @@ function runnerFixture({ messages = [], pendingMessages = [], pollMessages, comp
   };
   let runner = createCheckpointRunner(deps);
   return {
-    get runner() { return runner; }, runtime, calls, claims, polls, finalizedThrough, outbox, pending, runStatuses, get cursor() { return cursor; },
+    get runner() { return runner; }, runtime, calls, claims, successfulClaims, polls, finalizedThrough, outbox, pending, runStatuses, get cursor() { return cursor; },
     setDelivery(overrides) { Object.assign(deps, overrides); runner = createCheckpointRunner(deps); },
   };
 }
@@ -371,4 +461,10 @@ function message(messageId, text) {
 
 function messageAt(messageId, text, createdAt) {
   return { ...message(messageId, text), createdAt };
+}
+
+function digestMessages(messages) {
+  return createHash("sha256").update(JSON.stringify(messages.map((item) => ({
+    id: item.messageId, content: item.content,
+  })))).digest("hex");
 }

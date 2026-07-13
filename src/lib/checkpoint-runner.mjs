@@ -9,7 +9,8 @@ export function createCheckpointRunner(deps) {
   requireDependencies(deps);
 
   return {
-    async run({ now = deps.clock?.now?.() || new Date(), forcedNode, dryRun = false } = {}) {
+    async run({ now = deps.clock?.now?.() || new Date(), forcedNode, replayToken, dryRun = false } = {}) {
+      const controlledReplay = resolveReplayToken({ forcedNode, replayToken });
       const instant = new Date(now);
       if (Number.isNaN(instant.getTime())) throw new Error("valid checkpoint time is required");
       const timezone = deps.config?.timezone || "Asia/Shanghai";
@@ -38,7 +39,7 @@ export function createCheckpointRunner(deps) {
         const chatId = await deps.resolveChatId();
         for (const ref of refs) {
           const { node, workDate, pollThrough } = ref;
-          const runKey = `${workDate}:${node}`;
+          const runKey = checkpointRunKey({ workDate, node, replayToken: controlledReplay });
           const claim = await deps.runtime.claimRun({ runKey, workDate, node, expiresAt });
           if (!claim.claimed) continue;
           activeRun = { runKey, claimToken: claim.claimToken };
@@ -117,7 +118,13 @@ export function createCheckpointRunner(deps) {
                 receiveId: deps.config.managerUserId,
                 receiveIdType: "open_id",
               },
-              idempotencyKey: `private-summary:${workDate}:${node}:${scheduleVersion}:${messageDigest(analysisBatch)}`,
+              idempotencyKey: privateSummaryKey({
+                workDate,
+                node,
+                scheduleVersion,
+                digest: messageDigest(analysisBatch),
+                replayToken: controlledReplay,
+              }),
             });
             summary.repliesQueued += 1;
           }
@@ -178,6 +185,29 @@ export function validateCheckpointNode(node) {
     throw new Error(`unsupported checkpoint node: ${node}`);
   }
   return node;
+}
+
+export function validateReplayToken(token) {
+  if (typeof token !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(token)) {
+    throw new Error("invalid replay token");
+  }
+  return token;
+}
+
+function resolveReplayToken({ forcedNode, replayToken }) {
+  if (replayToken === undefined) return "";
+  if (!forcedNode) throw new Error("replay token requires forced checkpoint node");
+  return validateReplayToken(replayToken);
+}
+
+function checkpointRunKey({ workDate, node, replayToken }) {
+  const ordinaryKey = `${workDate}:${node}`;
+  return replayToken ? `${ordinaryKey}:replay:${replayToken}` : ordinaryKey;
+}
+
+function privateSummaryKey({ workDate, node, scheduleVersion, digest, replayToken }) {
+  const ordinaryKey = `private-summary:${workDate}:${node}:${scheduleVersion}:${digest}`;
+  return replayToken ? `${ordinaryKey}:replay:${replayToken}` : ordinaryKey;
 }
 
 function normalizeInbound(message, chatId) {

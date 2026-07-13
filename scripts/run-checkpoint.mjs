@@ -3,32 +3,47 @@ import { loadConfig } from "../src/config.mjs";
 import { listConversationMessages } from "../src/lib/feishu-polling.mjs";
 import { resolveCheckpointContext } from "../src/lib/checkpoint-schedule.mjs";
 import { sanitizeError } from "../src/lib/sanitize-error.mjs";
-import { validateCheckpointNode } from "../src/lib/checkpoint-runner.mjs";
+import { validateCheckpointNode, validateReplayToken } from "../src/lib/checkpoint-runner.mjs";
 
 let runtime;
+let replayToken;
 try {
   const options = parseArgs(process.argv.slice(2));
+  replayToken = options.replayToken;
+  validateReplayOptions(options);
   const config = loadConfig();
   const result = options.dryRun
     ? await runDryDiagnostic(config, options)
     : await runCheckpoint(config, options);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } catch (error) {
-  process.stdout.write(`${JSON.stringify({ status: "failed", error: sanitizeError(error) })}\n`);
+  const safeError = redactReplayToken(sanitizeError(error), replayToken);
+  process.stdout.write(`${JSON.stringify({ status: "failed", error: safeError })}\n`);
   process.exitCode = 1;
 } finally {
   await runtime?.close?.();
 }
 
 function parseArgs(args) {
-  const options = { node: "", now: "", dryRun: false };
+  const options = { node: "", now: "", replayToken: undefined, dryRun: false };
   for (const arg of args) {
     if (arg === "--dry-run") options.dryRun = true;
     else if (arg.startsWith("--node=") && arg.length > 7) options.node = arg.slice(7);
     else if (arg.startsWith("--now=") && arg.length > 6) options.now = arg.slice(6);
+    else if (arg.startsWith("--replay-token=")) options.replayToken = arg.slice("--replay-token=".length);
     else throw new Error(`unsupported argument: ${arg}`);
   }
   return options;
+}
+
+function validateReplayOptions(options) {
+  if (options.replayToken === undefined) return;
+  if (!options.node) throw new Error("replay token requires forced checkpoint node");
+  validateReplayToken(options.replayToken);
+}
+
+function redactReplayToken(message, token) {
+  return token ? message.split(token).join("[redacted]") : message;
 }
 
 async function runCheckpoint(config, options) {
@@ -37,6 +52,7 @@ async function runCheckpoint(config, options) {
   return runtime.checkpointRunner.run({
     ...(options.node ? { forcedNode: options.node } : {}),
     ...(options.now ? { now: options.now } : {}),
+    ...(options.replayToken !== undefined ? { replayToken: options.replayToken } : {}),
   });
 }
 
