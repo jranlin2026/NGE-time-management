@@ -102,6 +102,102 @@ test("prepare is mutation-free, writes a private manifest and returns only sanit
   for (const guid of fixture.remoteGuids) assert.equal(printed.includes(guid), false);
 });
 
+test("prepare recognizes a completed cutover without its manifest using read-only verification", async (t) => {
+  const fixture = await cutoverFixture(t);
+  const prepared = await preparePersonalPlanCutover(fixture.prepareOptions);
+  await applyPersonalPlanCutover({
+    manifestPath: prepared.manifestPath,
+    manifestDir: fixture.manifestDir,
+    repo: fixture.repo,
+    api: fixture.api,
+    config: {},
+    expectedWorkDate: WORK_DATE,
+  });
+  await fs.rm(prepared.manifestPath);
+  fixture.api.deleteCalls.length = 0;
+  fixture.api.statusCalls.length = 0;
+
+  const result = await preparePersonalPlanCutover(fixture.prepareOptions);
+
+  assert.deepEqual(result, {
+    status: "already_applied",
+    verification: "read_only",
+    counts: {
+      legacyParents: 0,
+      completedHistoricalParents: 5,
+      retainedLinks: 0,
+      obsoleteLinks: 0,
+      targetLinks: 4,
+      remoteDeletes: 0,
+    },
+  });
+  assert.equal(fixture.api.deleteCalls.length, 0);
+  assert.equal(fixture.api.statusCalls.length, 0);
+  assert.deepEqual(await fs.readdir(fixture.manifestDir), []);
+  for (const guid of fixture.remoteGuids) assert.equal(JSON.stringify(result).includes(guid), false);
+});
+
+test("completed-state prepare preserves every read-only safety fence", async (t) => {
+  const scenarios = [
+    {
+      name: "a legacy duplicate remains",
+      mutate(fixture) {
+        fixture.api.parents.push(remoteParent(fixture.legacyGuids[0], { allDay: true }));
+      },
+      error: /zero legacy duplicate parents/,
+    },
+    {
+      name: "the target remote tree is incomplete",
+      mutate(fixture) {
+        fixture.api.children["keep-parent"].pop();
+      },
+      error: /target personal IP remote children must exactly match its links/,
+    },
+    {
+      name: "completed history changed",
+      mutate(fixture) {
+        fixture.api.parents = fixture.api.parents.filter((item) => item.guid !== "history-4");
+      },
+      error: /exactly five completed historical parents/,
+    },
+    {
+      name: "a source link remains",
+      mutate(fixture) {
+        fixture.repo.upsertFeishuLink({
+          localTaskId: RETAINED_ID,
+          checkpointIndex: -1,
+          taskGuid: "unexpected-source-parent",
+          parentGuid: null,
+          snapshotHash: "unexpected-source",
+        });
+      },
+      error: /source links must be empty after apply/,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async (t) => {
+      const fixture = await cutoverFixture(t);
+      const prepared = await preparePersonalPlanCutover(fixture.prepareOptions);
+      await applyPersonalPlanCutover({
+        manifestPath: prepared.manifestPath,
+        manifestDir: fixture.manifestDir,
+        repo: fixture.repo,
+        api: fixture.api,
+        config: {},
+        expectedWorkDate: WORK_DATE,
+      });
+      await fs.rm(prepared.manifestPath);
+      fixture.api.deleteCalls.length = 0;
+      scenario.mutate(fixture);
+
+      await assert.rejects(() => preparePersonalPlanCutover(fixture.prepareOptions), scenario.error);
+      assert.equal(fixture.api.deleteCalls.length, 0);
+      assert.deepEqual(await fs.readdir(fixture.manifestDir), []);
+    });
+  }
+});
+
 test("apply deletes only the manifest sequence then atomically rebinds retained links", async (t) => {
   const fixture = await cutoverFixture(t);
   const prepared = await preparePersonalPlanCutover(fixture.prepareOptions);

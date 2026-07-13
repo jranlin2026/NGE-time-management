@@ -67,8 +67,9 @@ export function classifyPersonalPlanCutover({
   const sentLegacyGuids = asSet(legacyTaskGuids);
   const managedGuids = new Set(links.map((link) => link.taskGuid));
   const childMap = asChildMap(remoteChildrenByParent);
+  const retainedLinks = linksFor(links, retainedLocalTaskId);
+  const obsoleteLinks = linksFor(links, obsoleteLocalTaskId);
   const targetLinks = linksFor(links, targetLocalTaskId);
-  if (targetLinks.length !== 0) throw new Error("cutover target must have zero links before prepare");
 
   const legacyParents = parents.filter((task) => isLegacyDuplicateCandidate({
     task,
@@ -76,12 +77,40 @@ export function classifyPersonalPlanCutover({
     managedGuids,
     subtasks: childMap.get(task.guid) || [],
   })).sort(byGuid);
-  if (legacyParents.length !== 5) throw new Error("cutover requires exactly five legacy duplicate parents");
 
   const completedHistoricalParents = parents.filter(isCompleted).sort(byGuid);
   if (completedHistoricalParents.length !== 5) {
     throw new Error("cutover requires exactly five completed historical parents");
   }
+
+  if (targetLinks.length !== 0) {
+    if (retainedLinks.length !== 0 || obsoleteLinks.length !== 0) {
+      throw new Error("cutover source links must be empty after apply");
+    }
+    const targetTree = exactManagedTree({
+      label: "target",
+      localTaskId: targetLocalTaskId,
+      links,
+      parents,
+      childMap,
+    });
+    if (legacyParents.length !== 0) {
+      throw new Error("completed cutover requires zero legacy duplicate parents");
+    }
+    return {
+      state: "already_applied",
+      counts: {
+        legacyParents: 0,
+        completedHistoricalParents: completedHistoricalParents.length,
+        retainedLinks: 0,
+        obsoleteLinks: 0,
+        targetLinks: targetTree.links.length,
+        remoteDeletes: 0,
+      },
+    };
+  }
+
+  if (legacyParents.length !== 5) throw new Error("cutover requires exactly five legacy duplicate parents");
 
   const retainedTree = exactManagedTree({
     label: "retained",
@@ -150,6 +179,9 @@ export async function preparePersonalPlanCutover({
     managedLinks: repo.listAllFeishuLinks(),
     legacyTaskGuids: repo.listSentLegacyTaskGuids(),
   });
+  if (classified.state === "already_applied") {
+    return { status: "already_applied", verification: "read_only", counts: classified.counts };
+  }
   const generatedAt = now();
   const manifest = { format: FORMAT, generatedAt, ...classified };
   await fs.mkdir(manifestDir, { recursive: true, mode: 0o700 });
