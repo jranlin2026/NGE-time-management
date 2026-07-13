@@ -388,6 +388,74 @@ test("completes one checkpoint without completing the parent task", async () => 
   db.close();
 });
 
+test("early checkpoint completion adds at most one task while preserving the current doing block", async () => {
+  const settings = {
+    timezone: "Asia/Shanghai",
+    windows: [["10:00", "12:00"], ["14:00", "18:00"], ["20:00", "22:00"]],
+    maxCriticalTasks: 5,
+    noResponseMinutes: 15,
+    projectBoosts: [],
+  };
+  const { db, tasks, ops, manager } = setup({ settings });
+  const current = tasks.create({
+    id: "early-current",
+    title: "完成当前核心交付",
+    rawInput: "完成当前核心交付",
+    status: "doing",
+    importance: "A",
+    urgency: "high",
+    estimateMinutes: 60,
+    checkpoints: [
+      { title: "完成第一关", minutes: 30 },
+      { title: "导出当前交付", minutes: 30 },
+    ],
+  });
+  for (let index = 1; index <= 4; index += 1) {
+    tasks.create({
+      id: `early-next-${index}`,
+      title: `高价值候选 ${index}`,
+      rawInput: `高价值候选 ${index}`,
+      status: "ready",
+      importance: "A",
+      urgency: "high",
+      estimateMinutes: 30,
+      checkpoints: [{ title: `交付候选 ${index}`, minutes: 30 }],
+    });
+  }
+
+  await manager.replanDay({
+    date: "2026-07-10",
+    now: NOW,
+    deliveryMode: "task_dm",
+    maxCriticalTasks: 1,
+  });
+  const before = ops.currentSchedule("2026-07-10");
+  const beforeTaskIds = new Set(before.map((block) => block.taskId));
+  const doingBefore = before.find((block) => block.status === "doing");
+  assert.equal(beforeTaskIds.size, 1);
+  assert.equal(doingBefore.taskId, current.id);
+
+  const result = await manager.handleAction({
+    action: "complete_checkpoint",
+    taskId: current.id,
+    checkpointIndex: 0,
+    idempotencyKey: "early-completion:1",
+    deliveryMode: "task_dm",
+    suppressOutbox: true,
+  });
+
+  const afterTaskIds = new Set(result.schedule.blocks.map((block) => block.taskId));
+  const introducedTaskIds = [...afterTaskIds].filter((taskId) => !beforeTaskIds.has(taskId));
+  const doingAfter = result.schedule.blocks.find((block) => block.status === "doing");
+  assert.equal(afterTaskIds.size, 2);
+  assert.equal(introducedTaskIds.length, 1);
+  assert.equal(afterTaskIds.has(current.id), true);
+  assert.equal(doingAfter.taskId, doingBefore.taskId);
+  assert.equal(doingAfter.startsAt, doingBefore.startsAt);
+  assert.equal(doingAfter.status, "doing");
+  db.close();
+});
+
 test("requires a reason before deferring a task", async () => {
   const { db, tasks, ops, manager } = setup();
   const task = tasks.create({ id: "task-defer", rawInput: "拍视频", status: "doing" });

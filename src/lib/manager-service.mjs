@@ -126,6 +126,11 @@ export function createManagerService(deps) {
       if (!Number.isInteger(checkpointIndex) || checkpointIndex < 0) {
         throw new Error("checkpoint index is required");
       }
+      const actionNow = input.now ? new Date(input.now) : nowDate();
+      const scheduleDate = input.date || localDate(actionNow, settings.timezone);
+      const scheduledTaskCount = new Set(
+        ops.currentSchedule(scheduleDate).map((block) => block.taskId),
+      ).size;
       const updated = transaction(() => {
         const saved = tasks.completeCheckpoint(task.id, checkpointIndex);
         ops.appendEvent({
@@ -143,7 +148,16 @@ export function createManagerService(deps) {
         }
         return saved;
       });
-      const schedule = await replanDay({ reason: "checkpoint_completed", deliveryMode: input.deliveryMode });
+      const schedule = await replanDay({
+        reason: "checkpoint_completed",
+        date: scheduleDate,
+        now: actionNow.toISOString(),
+        deliveryMode: input.deliveryMode,
+        maxCriticalTasks: Math.min(
+          normalizedCriticalTaskLimit(settings.maxCriticalTasks),
+          scheduledTaskCount + 1,
+        ),
+      });
       return { action: input.action, task: updated, schedule };
     }
     if (input.action === "start") {
@@ -428,6 +442,12 @@ function extractBlocker(value, title) {
 
 function isDueOn(task, date) {
   return Boolean(task.dueAt && task.dueAt.slice(0, 10) === date);
+}
+
+function normalizedCriticalTaskLimit(value) {
+  const parsed = Number(value ?? 3);
+  if (!Number.isFinite(parsed)) return 3;
+  return Math.min(5, Math.max(0, Math.trunc(parsed)));
 }
 
 function localDate(date, timezone) {
